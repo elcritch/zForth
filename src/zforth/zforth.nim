@@ -49,16 +49,16 @@ const
 template ZF_FLAG_LEN*(v: untyped): untyped =
   (v and 0x0000001F)
 
-when ZF_ENABLE_INLINE:
+when defined(zfInline):
   const
     ZF_INLINE* = inline
 else:
   const
     ZF_INLINE* = true
-##  This macro is used to perform boundary checks. If ZF_ENABLE_BOUNDARY_CHECKS
+##  This macro is used to perform boundary checks. If defined(zfBoundaryChecks)
 ##  is set to 0, the boundary check code will not be compiled in to reduce size
 
-when ZF_ENABLE_BOUNDARY_CHECKS:
+when defined(zfBoundaryChecks):
   template CHECK*(exp, abort: untyped): void =
     if not (exp):
       zf_abort(abort)
@@ -145,18 +145,17 @@ proc dict_get_bytes*(`addr`: zf_addr; buf: pointer; len: csize)
 ##  macro, allowing the compiler to optimize away the function calls to
 ##  op_name()
 
-when ZF_ENABLE_TRACE:
+when defined(zfTrace):
   proc trace*(fmt: cstring) {.varargs.} =
-    if TRACE:
-      var va: va_list
-      va_start(va, fmt)
-      zf_host_trace(fmt, va)
-      va_end(va)
+    var va: va_list
+    va_start(va, fmt)
+    zf_host_trace(fmt, va)
+    va_end(va)
 
   proc op_name*(`addr`: zf_addr): cstring =
     var w: zf_addr = LATEST
     var name: array[32, char]
-    while TRACE and w:
+    while w:
       var
         xt: zf_addr
         p: zf_addr = w
@@ -263,7 +262,7 @@ proc dict_get_bytes*(`addr`: zf_addr; buf: pointer; len: csize) =
 ##     integer 128 .. 16383  10xxxxxx xxxxxxxx
 ##     else                  11111111 <raw copy of zf_cell>
 ##
-##  #if ZF_ENABLE_TYPED_MEM_ACCESS
+##  #if defined(zf_TYPED_MEM_ACCESS)
 ##  #define GET(s, t) if(size == s) { t v ## t; dict_get_bytes(addr, &v ## t, sizeof(t)); *v = v ## t; return sizeof(t); };
 ##  #define PUT(s, t, val) if(size == s) { t v ## t = val; return dict_put_bytes(addr, &v ## t, sizeof(t)); }
 ##  #else
@@ -665,7 +664,7 @@ proc zf_init*() =
   rsp = 0
   COMPILING = 0
 
-when ZF_ENABLE_BOOTSTRAP:
+when defined(zfBootstrap):
   ##
   ##  Functions for bootstrapping the dictionary by adding all primitive ops and the
   ##  user variables.

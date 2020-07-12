@@ -4,8 +4,10 @@
 ##  tracing at run time when calling zf_init() or by setting the 'trace' user
 ##  variable to 1
 
-const
-  ZF_ENABLE_TRACE* = 1
+when defined(zfEnableTrace):
+  const ZF_ENABLE_TRACE* = true
+else:
+  const ZF_ENABLE_TRACE* = false
 
 ##  Set to 1 to add boundary checks to stack operations. Increases .text size
 ##  by approx 100 bytes
