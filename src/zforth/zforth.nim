@@ -1,7 +1,8 @@
+import tables, options
 
 type
   zf_cell* = int
-  zf_addr* = cuint
+  zf_addr* = ref zf_cell
 
 const
   ZF_CELL_FMT* = "%.14g"
@@ -12,12 +13,12 @@ const
 
 const
   ZF_DICT_SIZE* = 4096
-  ZF_DSTACK_SIZE* = 32
-  ZF_RSTACK_SIZE* = 32
+  ZF_DSTACK_SIZE* = 128
+  ZF_RSTACK_SIZE* = 128
 
 type
   zf_result* = enum
-    ZF_OK = 0,
+    ZF_OK = 0x0,
     ZF_ABORT_INTERNAL_ERROR = 0x1,
     ZF_ABORT_OUTSIDE_MEM = 0x2,
     ZF_ABORT_DSTACK_UNDERRUN = 0x3,
@@ -63,9 +64,9 @@ proc zf_pick*(n: zf_addr): zf_cell
 proc zf_sc*(): zf_cell
 ##  Host provides these functions
 
-proc zf_host_sys*(id: zf_syscall_id; last_word: cstring): zf_input_state
-proc zf_host_trace*(fmt: cstring; va: va_list)
-proc zf_host_parse_num*(buf: cstring): zf_cell
+proc zf_host_sys*(id: zf_syscall_id; last_word: string): zf_input_state
+proc zf_host_trace*(fmt: string; va: seq[string])
+proc zf_host_parse_num*(buf: string): zf_cell
 
 ##  Flags and length encoded in words
 
@@ -100,117 +101,99 @@ else:
 ##  prefixed by an underscore, which is later stripped of when putting the name
 ##  in the dictionary.
 
-template WRD*(s: untyped): untyped =
-  (s)
-
 type
-  zf_prim_e* = enum
-    PRIM_EXIT, PRIM_LIT, PRIM_LTZ, PRIM_COL, PRIM_SEMICOL, PRIM_ADD, PRIM_SUB,
-    PRIM_MUL, PRIM_DIV, PRIM_MOD, PRIM_DROP, PRIM_DUP, PRIM_PICKR, PRIM_IMMEDIATE,
-    PRIM_PEEK, PRIM_POKE, PRIM_SWAP, PRIM_ROT, PRIM_JMP, PRIM_JMP0, PRIM_TICK,
-    PRIM_COMMENT, PRIM_PUSHR, PRIM_POPR, PRIM_EQUAL, PRIM_SYS, PRIM_PICK, PRIM_COMMA,
-    PRIM_KEY, PRIM_LITS, PRIM_LEN, PRIM_AND, PRIM_COUNT
+  zf_primitive* = enum
+    PRIM_EXIT = "exit",
+    PRIM_LIT = "lit",
+    PRIM_LTZ = "<0",
+    PRIM_COL = ":",
+    PRIM_SEMICOL = "_;",
+    PRIM_ADD = "+",
+    PRIM_SUB = "-",
+    PRIM_MUL = "*",
+    PRIM_DIV = "/",
+    PRIM_MOD = "%",
+    PRIM_DROP = "drop",
+    PRIM_DUP = "dup",
+    PRIM_PICKR = "pickr",
+    PRIM_IMMEDIATE = "_immediate",
+    PRIM_PEEK = "@@",
+    PRIM_POKE = "!!",
+    PRIM_SWAP = "swap",
+    PRIM_ROT = "rot",
+    PRIM_JMP = "jmp",
+    PRIM_JMP0 = "jmp0",
+    PRIM_TICK = "\'",
+    PRIM_COMMENT = "\\",
+    PRIM_PUSHR = ">r",
+    PRIM_POPR = "r>",
+    PRIM_EQUAL = "=",
+    PRIM_SYS = "sys",
+    PRIM_PICK = "pick",
+    PRIM_COMMA = "k,,",
+    PRIM_KEY = "key",
+    PRIM_LITS = "lits",
+    PRIM_LEN = "#",
+    PRIM_AND = "&",
+    PRIM_COUNT = "cnt"
 
-
-type
-  zf_prim* = zf_prim_e
-
-var prim_names*: ref char = [WRD("exit"), WRD("lit"), WRD("<0"), WRD(":"), WRD("_;"),
-                        WRD("+"), WRD("-"), WRD("*"), WRD("/"), WRD("%"),
-                        WRD("drop"), WRD("dup"), WRD("pickr"), WRD("_immediate"),
-                        WRD("@@"), WRD("!!"), WRD("swap"), WRD("rot"), WRD("jmp"),
-                        WRD("jmp0"), WRD("\'"), WRD("WRD("), WRD(">r"), WRD("r>"),
-                        WRD("="), WRD("sys"), WRD("pick"), WRD(",,"), WRD("key"),
-                        WRD("lits"), WRD("##"), WRD("&")]
 
 ##  Stacks and dictionary memory
+## ##  Stacks and dictionary memory
+type 
+  ZStack* = ref object 
+    maximum: zf_cell
+    data*: seq[zf_cell]
 
-var rstack*: array[ZF_RSTACK_SIZE, zf_cell]
+proc newZStack*(maximum: zf_cell): ZStack =
+  result = new(ZStack)
+  result.maximum = 0
+  result.data = newSeqOfCap[zf_cell](maximum)
 
-var dstack*: array[ZF_DSTACK_SIZE, zf_cell]
-
-var dict*: array[ZF_DICT_SIZE, uint8_t]
+var
+  rstack*: ZStack = newZStack(ZF_RSTACK_SIZE)
+  dstack*: ZStack = newZStack(ZF_DSTACK_SIZE)
+  dict*: Table[string, seq[zf_cell]]
 
 ##  State and stack and interpreter pointers
-
-var input_state*: zf_input_state
-
-var dsp*: zf_addr
-
-var rsp*: zf_addr
-
-var ip*: zf_addr
+var
+  input_state*: zf_input_state
+  dsp*: zf_addr
+  rsp*: zf_addr
+  ip*: zf_addr
 
 ##  setjmp env for handling aborts
 
-var jmpbuf*: jmp_buf
 
 ##  User variables are variables which are shared between forth and C. From
 ##  forth these can be accessed with @ and ! at pseudo-indices in low memory, in
 ##  C they are stored in an array of zf_addr with friendly reference names
 ##  through some macros
 
+var uservars*: Table[string, seq[zf_cell]]
+
 const
-  HERE* = uservar[0]            ##  compilation pointer in dictionary
-  LATEST* = uservar[1]          ##  pointer to last compiled word
-  TRACE* = uservar[2]           ##  trace enable flag
-  COMPILING* = uservar[3]       ##  compiling flag
-  POSTPONE* = uservar[4]        ##  flag to indicate next imm word should be compiled
-  USERVAR_COUNT* = 4
-
-var uservar_names*: ref char = [WRD("h"), WRD("latest"), WRD("compiling"),
-                           WRD("_postpone")]
-
-var uservar*: ref zf_addr = cast[ref zf_addr](dict)
+    HERE* = "h"           ##  compilation pointer in dictionary
+    LATEST* = "latest"
+    TRACE* = "trace"           ##  trace enable flag
+    COMPILING* = "compiling"       ##  compiling flag
+    POSTPONE* = "_postpone"        ##  flag to indicate next imm word should be compiled
+    USERVAR_COUNT* = "_count"
 
 ##  Prototypes
 
-proc do_prim*(prim: zf_prim; input: cstring)
+proc do_prim*(prim: zf_primitive; input: string)
 proc dict_get_cell*(`addr`: zf_addr; v: ref zf_cell): zf_addr
 proc dict_get_bytes*(`addr`: zf_addr; buf: pointer; len: csize)
 ##  Tracing functions. If disabled, the trace() function is replaced by an empty
 ##  macro, allowing the compiler to optimize away the function calls to
 ##  op_name()
 
-when defined(zfTrace):
-  proc trace*(fmt: cstring) {.varargs.} =
-    var va: va_list
-    va_start(va, fmt)
-    zf_host_trace(fmt, va)
-    va_end(va)
+proc trace*(fmt: cstring) {.varargs.} =
+  discard
 
-  proc op_name*(`addr`: zf_addr): cstring =
-    var w: zf_addr = LATEST
-    var name: array[32, char]
-    while w:
-      var
-        xt: zf_addr
-        p: zf_addr = w
-      var
-        d: zf_cell
-        link: zf_cell
-        op2: zf_cell
-      var lenflags: cint
-      inc(p, dict_get_cell(p, addr(d)))
-      lenflags = d
-      inc(p, dict_get_cell(p, addr(link)))
-      xt = p + ZF_FLAG_LEN(lenflags)
-      dict_get_cell(xt, addr(op2))
-      if ((lenflags and ZF_FLAG_PRIM) and `addr` == cast[zf_addr](op2)) or `addr` == w or
-          `addr` == xt:
-        var l: cint = ZF_FLAG_LEN(lenflags)
-        dict_get_bytes(p, name, l)
-        name[l] = '\x00'
-        return name
-      w = link
-    return "?"
-
-else:
-  proc trace*(fmt: cstring) {.varargs.} =
-    discard
-
-  proc op_name*(`addr`: zf_addr): cstring =
-    return nil
+proc op_name*(zaddr: zf_addr): string =
+  return ""
 
 ##
 ##  Handle abort by unwinding the C stack and sending control back into
@@ -218,7 +201,7 @@ else:
 ##
 
 proc zf_abort*(reason: zf_result) =
-  longjmp(jmpbuf, reason)
+  raise newException(CatchableError, "error: " & $zf_result)
 
 ##
 ##  Stack operations.
@@ -226,7 +209,7 @@ proc zf_abort*(reason: zf_result) =
 
 proc zf_push*(v: zf_cell) =
   ##  ZF_INLINE
-  CHECK(dsp < ZF_DSTACK_SIZE, ZF_ABORT_DSTACK_OVERRUN)
+  # CHECK(dsp < ZF_DSTACK_SIZE, ZF_ABORT_DSTACK_OVERRUN)
   trace("»", ZF_CELL_FMT, " ", v)
   dstack[inc(dsp)] = v
 
@@ -263,24 +246,6 @@ proc zf_pickr*(n: zf_addr): zf_cell =
   return rstack[rsp - n - 1]
 
 ##
-##  All access to dictionary memory is done through these functions.
-##
-
-proc dict_put_bytes*(`addr`: zf_addr; buf: pointer; len: csize): zf_addr =
-  var p: ref uint8_t = cast[ref uint8_t](buf)
-  var i: csize = len
-  CHECK(`addr` < ZF_DICT_SIZE - len, ZF_ABORT_OUTSIDE_MEM)
-  while dec(i):
-    dict[inc(`addr`)] = inc(p)[]
-  return len
-
-proc dict_get_bytes*(`addr`: zf_addr; buf: pointer; len: csize) =
-  var p: ref uint8_t = cast[ref uint8_t](buf)
-  CHECK(`addr` < ZF_DICT_SIZE - len, ZF_ABORT_OUTSIDE_MEM)
-  while dec(len):
-    inc(p)[] = dict[inc(`addr`)]
-
-##
 ##  zf_cells are encoded in the dictionary with a variable length:
 ##
 ##  encode:
@@ -304,7 +269,7 @@ template PUT*(s, t, val: untyped): void =
 
 proc dict_put_cell_typed*(`addr`: zf_addr; v: zf_cell; size: zf_mem_size): zf_addr =
   var vi: cuint = v
-  var t: array[2, uint8_t]
+  var t: array[2, uint8]
   trace("\n+", ZF_ADDR_FMT, " ", ZF_ADDR_FMT, `addr`, cast[zf_addr](v))
   if size == ZF_MEM_SIZE_VAR:
     if (v - vi) == 0:
@@ -322,7 +287,7 @@ proc dict_put_cell_typed*(`addr`: zf_addr; v: zf_cell; size: zf_mem_size): zf_ad
     return dict_put_bytes(`addr` + 0, t, 1) +
         dict_put_bytes(`addr` + 1, addr(v), sizeof((v)))
   PUT(ZF_MEM_SIZE_CELL, zf_cell, v)
-  PUT(ZF_MEM_SIZE_U8, uint8_t, vi)
+  PUT(ZF_MEM_SIZE_U8, uint8, vi)
   PUT(ZF_MEM_SIZE_U16, uint16_t, vi)
   PUT(ZF_MEM_SIZE_U32, uint32_t, vi)
   PUT(ZF_MEM_SIZE_S8, int8_t, vi)
@@ -332,7 +297,7 @@ proc dict_put_cell_typed*(`addr`: zf_addr; v: zf_cell; size: zf_mem_size): zf_ad
   return 0
 
 proc dict_get_cell_typed*(`addr`: zf_addr; v: ref zf_cell; size: zf_mem_size): zf_addr =
-  var t: array[2, uint8_t]
+  var t: array[2, uint8]
   dict_get_bytes(`addr`, t, sizeof((t)))
   if size == ZF_MEM_SIZE_VAR:
     if t[0] and 0x00000080:
@@ -346,7 +311,7 @@ proc dict_get_cell_typed*(`addr`: zf_addr; v: ref zf_cell; size: zf_mem_size): z
       v[] = t[0]
       return 1
   GET(ZF_MEM_SIZE_CELL, zf_cell)
-  GET(ZF_MEM_SIZE_U8, uint8_t)
+  GET(ZF_MEM_SIZE_U8, uint8)
   GET(ZF_MEM_SIZE_U16, uint16_t)
   GET(ZF_MEM_SIZE_U32, uint32_t)
   GET(ZF_MEM_SIZE_S8, int8_t)
@@ -458,7 +423,7 @@ proc run*(input: cstring) =
       inc(i)
     inc(ip, l)
     if code <= PRIM_COUNT:
-      do_prim(cast[zf_prim](code), input)
+      do_prim(cast[zf_primitive](code), input)
       ##  If the prim requests input, restore IP so that the
       ##  next time around we call the same prim again
       if input_state != ZF_INPUT_INTERPRET:
@@ -492,7 +457,7 @@ proc peek*(`addr`: zf_addr; val: ref zf_cell; len: cint): zf_addr =
 ##  Run primitive opcode
 ##
 
-proc do_prim*(op: zf_prim; input: cstring) =
+proc do_prim*(op: zf_primitive; input: cstring) =
   var
     d1: zf_cell
     d2: zf_cell
@@ -696,7 +661,7 @@ when defined(zfBootstrap):
   ##  Functions for bootstrapping the dictionary by adding all primitive ops and the
   ##  user variables.
   ##
-  proc add_prim*(name: cstring; op: zf_prim) =
+  proc add_prim*(name: cstring; op: zf_primitive) =
     var imm: cint = 0
     if name[0] == '_':
       inc(name)
@@ -718,7 +683,7 @@ when defined(zfBootstrap):
     var p: cstring
     p = prim_names
     while p[]:
-      add_prim(p, cast[zf_prim](inc(i)))
+      add_prim(p, cast[zf_primitive](inc(i)))
       inc(p, strlen(p) + 1)
     i = 0
     p = uservar_names
