@@ -1,26 +1,53 @@
 
 type
+  zf_cell* = int
+  zf_addr* = cuint
+
+const
+  ZF_CELL_FMT* = "%.14g"
+  ZF_ADDR_FMT* = "%04x"
+
+##  Memory region sizes: dictionary size is given in bytes, stack sizes are
+##  number of elements of type zf_cell
+
+const
+  ZF_DICT_SIZE* = 4096
+  ZF_DSTACK_SIZE* = 32
+  ZF_RSTACK_SIZE* = 32
+
+type
   zf_result* = enum
-    ZF_OK,                    ##  0
-    ZF_ABORT_INTERNAL_ERROR,  ##  1
-    ZF_ABORT_OUTSIDE_MEM,     ##  2
-    ZF_ABORT_DSTACK_UNDERRUN, ##  3
-    ZF_ABORT_DSTACK_OVERRUN,  ##  4
-    ZF_ABORT_RSTACK_UNDERRUN, ##  5
-    ZF_ABORT_RSTACK_OVERRUN,  ##  6
-    ZF_ABORT_NOT_A_WORD,      ##  7
-    ZF_ABORT_COMPILE_ONLY_WORD, ##  8
-    ZF_ABORT_INVALID_SIZE,    ##  9
-    ZF_ABORT_DIVISION_BY_ZERO, ##  A
-    ZF_ABORT_UNKNOWN_SYS,     ##  B
-    ZF_ABORT_UNKNOWN          ##  C
+    ZF_OK = 0,
+    ZF_ABORT_INTERNAL_ERROR = 0x1,
+    ZF_ABORT_OUTSIDE_MEM = 0x2,
+    ZF_ABORT_DSTACK_UNDERRUN = 0x3,
+    ZF_ABORT_DSTACK_OVERRUN = 0x4,
+    ZF_ABORT_RSTACK_UNDERRUN = 0x5,
+    ZF_ABORT_RSTACK_OVERRUN = 0x6,
+    ZF_ABORT_NOT_A_WORD = 0x7,
+    ZF_ABORT_COMPILE_ONLY_WORD = 0x8,
+    ZF_ABORT_INVALID_SIZE = 0x9,
+    ZF_ABORT_DIVISION_BY_ZERO = 0xA,
+    ZF_ABORT_UNKNOWN_SYS = 0xB,
+    ZF_ABORT_UNKNOWN = 0xC
   zf_mem_size* = enum
-    ZF_MEM_SIZE_VAR, ZF_MEM_SIZE_CELL, ZF_MEM_SIZE_U8, ZF_MEM_SIZE_U16,
-    ZF_MEM_SIZE_U32, ZF_MEM_SIZE_S8, ZF_MEM_SIZE_S16, ZF_MEM_SIZE_S32
+    ZF_MEM_SIZE_VAR,
+    ZF_MEM_SIZE_CELL,
+    ZF_MEM_SIZE_U8,
+    ZF_MEM_SIZE_U16,
+    ZF_MEM_SIZE_U32,
+    ZF_MEM_SIZE_S8,
+    ZF_MEM_SIZE_S16,
+    ZF_MEM_SIZE_S32
   zf_input_state* = enum
-    ZF_INPUT_INTERPRET, ZF_INPUT_PASS_CHAR, ZF_INPUT_PASS_WORD
+    ZF_INPUT_INTERPRET,
+    ZF_INPUT_PASS_CHAR,
+    ZF_INPUT_PASS_WORD
   zf_syscall_id* = enum
-    ZF_SYSCALL_EMIT, ZF_SYSCALL_PRINT, ZF_SYSCALL_TELL, ZF_SYSCALL_USER = 128
+    ZF_SYSCALL_EMIT,
+    ZF_SYSCALL_PRINT,
+    ZF_SYSCALL_TELL,
+    ZF_SYSCALL_USER = 128
 
 
 ##  ZForth API functions
