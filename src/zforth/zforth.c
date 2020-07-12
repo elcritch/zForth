@@ -348,7 +348,7 @@ static zf_addr dict_get_cell_typed(zf_addr addr, zf_cell *v, zf_mem_size size)
 	if(size == ZF_MEM_SIZE_VAR) {
 		if(t[0] & 0x80) {
 			if(t[0] == 0xff) {
-				dict_get_bytes(addr+1, v, sizeof(*v));
+				dict_get_bytes(addr+1, v, sizeof(*v))int
 				return 1 + sizeof(*v);
 			} else {
 				*v = ((t[0] & 0x3f) << 8) + t[1];

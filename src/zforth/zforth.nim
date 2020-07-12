@@ -259,20 +259,14 @@ proc zf_pickr*(n: zf_addr): zf_cell =
 ##  #define PUT(s, t, val) if(size == s) { t v ## t = val; return dict_put_bytes(addr, &v ## t, sizeof(t)); }
 ##  #else
 
-template GET*(s, t: untyped): void =
-  nil
-
-template PUT*(s, t, val: untyped): void =
-  nil
-
 ##
 ##  Shortcut functions for cell access with variable cell size
 ##
 
-proc dict_put_cell*(`addr`: zf_addr; v: zf_cell): zf_addr =
+proc dict_put_cell*(zaddr: zf_addr; v: zf_cell): zf_addr =
   return dict_put_cell_typed(`addr`, v, ZF_MEM_SIZE_VAR)
 
-proc dict_get_cell*(`addr`: zf_addr; v: ref zf_cell): zf_addr =
+proc dict_get_cell*(zaddr: zf_addr; v: ref zf_cell): zf_addr =
   return dict_get_cell_typed(`addr`, v, ZF_MEM_SIZE_VAR)
 
 ##
@@ -327,7 +321,7 @@ proc find_word*(name: cstring; word: ref zf_addr; code: ref zf_addr): cint =
       link: zf_cell
       d: zf_cell
     var p: zf_addr = w
-    var len: csize
+    var len: int
     inc(p, dict_get_cell(p, addr(d)))
     inc(p, dict_get_cell(p, addr(link)))
     len = ZF_FLAG_LEN(cast[cint](d))
