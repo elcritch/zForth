@@ -38,26 +38,53 @@
  * prefixed by an underscore, which is later stripped of when putting the name
  * in the dictionary. */
 
-#define _(s) s "\0"
+#define WRD(s) (s)
 
-typedef enum {
-	PRIM_EXIT,    PRIM_LIT,       PRIM_LTZ,  PRIM_COL,     PRIM_SEMICOL,  PRIM_ADD,
-	PRIM_SUB,     PRIM_MUL,       PRIM_DIV,  PRIM_MOD,     PRIM_DROP,     PRIM_DUP,
-	PRIM_PICKR,   PRIM_IMMEDIATE, PRIM_PEEK, PRIM_POKE,    PRIM_SWAP,     PRIM_ROT,
-	PRIM_JMP,     PRIM_JMP0,      PRIM_TICK, PRIM_COMMENT, PRIM_PUSHR,    PRIM_POPR,
-	PRIM_EQUAL,   PRIM_SYS,       PRIM_PICK, PRIM_COMMA,   PRIM_KEY,      PRIM_LITS,
-	PRIM_LEN,     PRIM_AND,
-
+enum zf_prim_e {
+	PRIM_EXIT,
+	PRIM_LIT,
+	PRIM_LTZ,
+	PRIM_COL,
+	PRIM_SEMICOL,
+	PRIM_ADD,
+	PRIM_SUB,
+	PRIM_MUL,
+	PRIM_DIV,
+	PRIM_MOD,
+	PRIM_DROP,
+	PRIM_DUP,
+	PRIM_PICKR,
+	PRIM_IMMEDIATE,
+	PRIM_PEEK,
+	PRIM_POKE,
+	PRIM_SWAP,
+	PRIM_ROT,
+	PRIM_JMP,
+	PRIM_JMP0,
+	PRIM_TICK,
+	PRIM_COMMENT,
+	PRIM_PUSHR,
+	PRIM_POPR,
+	PRIM_EQUAL,
+	PRIM_SYS,
+	PRIM_PICK,
+	PRIM_COMMA,
+	PRIM_KEY,
+	PRIM_LITS,
+	PRIM_LEN,
+	PRIM_AND,
 	PRIM_COUNT
-} zf_prim;
+} ;
+typedef struct zf_prim_e zf_prim;
 
-static const char prim_names[] =
-	_("exit")    _("lit")        _("<0")    _(":")     _("_;")        _("+")
-	_("-")       _("*")          _("/")     _("%")     _("drop")      _("dup")
-	_("pickr")   _("_immediate") _("@@")    _("!!")    _("swap")      _("rot")
-	_("jmp")     _("jmp0")       _("'")     _("_(")    _(">r")        _("r>")
-	_("=")       _("sys")        _("pick")  _(",,")    _("key")       _("lits")
-	_("##")      _("&");
+static const char prim_names[] = {
+	WRD("exit"),     WRD("lit"),         WRD("<0"),     WRD(":"),      WRD("_;"),         WRD("+"), 
+	WRD("-"),        WRD("*"),           WRD("/"),      WRD("%"),      WRD("drop"),       WRD("dup"), 
+	WRD("pickr"),    WRD("_immediate"),  WRD("@@"),     WRD("!!"),     WRD("swap"),       WRD("rot"), 
+	WRD("jmp"),      WRD("jmp0"),        WRD("'"),      WRD("WRD("),     WRD(">r"),         WRD("r>"), 
+	WRD("="),        WRD("sys"),         WRD("pick"),   WRD(",,"),     WRD("key"),        WRD("lits"), 
+	WRD("##"),       WRD("&")
+};
 
 
 /* Stacks and dictionary memory */
@@ -89,8 +116,9 @@ static jmp_buf jmpbuf;
 #define POSTPONE  uservar[4]    /* flag to indicate next imm word should be compiled */
 #define USERVAR_COUNT 4
 
-static const char uservar_names[] =
-	_("h")   _("latest")  _("compiling")  _("_postpone");
+static const char uservar_names[] = {
+	WRD("h"),    WRD("latest"),   WRD("compiling"),   WRD("_postpone")
+};
 
 static zf_addr *uservar = (zf_addr *)dict;
 
@@ -169,7 +197,7 @@ void zf_abort(zf_result reason)
  * Stack operations. 
  */
 
-ZF_INLINE void zf_push(zf_cell v)
+void zf_push(zf_cell v) // ZF_INLINE
 {
 	CHECK(dsp < ZF_DSTACK_SIZE, ZF_ABORT_DSTACK_OVERRUN);
 	trace("»" ZF_CELL_FMT " ", v);
@@ -177,7 +205,7 @@ ZF_INLINE void zf_push(zf_cell v)
 }
 
 
-ZF_INLINE zf_cell zf_pop(void)
+zf_cell zf_pop(void) // ZF_INLINE
 {
 	zf_cell v;
 	CHECK(dsp > 0, ZF_ABORT_DSTACK_UNDERRUN);
@@ -187,14 +215,14 @@ ZF_INLINE zf_cell zf_pop(void)
 }
 
 
-ZF_INLINE zf_cell zf_pick(zf_addr n)
+zf_cell zf_pick(zf_addr n) // ZF_INLINE
 {
 	CHECK(n < dsp, ZF_ABORT_DSTACK_UNDERRUN);
 	return dstack[dsp-n-1];
 }
 
 
-ZF_INLINE static void zf_pushr(zf_cell v)
+static void zf_pushr(zf_cell v) // ZF_INLINE
 {
 	CHECK(rsp < ZF_RSTACK_SIZE, ZF_ABORT_RSTACK_OVERRUN);
 	trace("r»" ZF_CELL_FMT " ", v);
@@ -202,7 +230,7 @@ ZF_INLINE static void zf_pushr(zf_cell v)
 }
 
 
-ZF_INLINE static zf_cell zf_popr(void)
+static zf_cell zf_popr(void) // ZF_INLINE
 {
 	zf_cell v;
 	CHECK(rsp > 0, ZF_ABORT_RSTACK_UNDERRUN);
@@ -211,7 +239,7 @@ ZF_INLINE static zf_cell zf_popr(void)
 	return v;
 }
 
-ZF_INLINE zf_cell zf_pickr(zf_addr n)
+zf_cell zf_pickr(zf_addr n) // ZF_INLINE
 {
 	CHECK(n < rsp, ZF_ABORT_RSTACK_UNDERRUN);
 	return rstack[rsp-n-1];
@@ -251,13 +279,13 @@ static void dict_get_bytes(zf_addr addr, void *buf, size_t len)
  *    else                  11111111 <raw copy of zf_cell>
  */
 
-#if ZF_ENABLE_TYPED_MEM_ACCESS
-#define GET(s, t) if(size == s) { t v ## t; dict_get_bytes(addr, &v ## t, sizeof(t)); *v = v ## t; return sizeof(t); };
-#define PUT(s, t, val) if(size == s) { t v ## t = val; return dict_put_bytes(addr, &v ## t, sizeof(t)); }
-#else
+// #if ZF_ENABLE_TYPED_MEM_ACCESS
+// #define GET(s, t) if(size == s) { t v ## t; dict_get_bytes(addr, &v ## t, sizeof(t)); *v = v ## t; return sizeof(t); };
+// #define PUT(s, t, val) if(size == s) { t v ## t = val; return dict_put_bytes(addr, &v ## t, sizeof(t)); }
+// #else
 #define GET(s, t)
 #define PUT(s, t, val)
-#endif
+// #endif
 
 static zf_addr dict_put_cell_typed(zf_addr addr, zf_cell v, zf_mem_size size)
 {
