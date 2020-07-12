@@ -65,8 +65,8 @@ proc zf_sc*(): zf_cell
 ##  Host provides these functions
 
 proc zf_host_sys*(id: zf_syscall_id; last_word: string): zf_input_state
-proc zf_host_trace*(fmt: string; va: seq[string])
-proc zf_host_parse_num*(buf: string): zf_cell
+# proc zf_host_trace*(fmt: string; va: seq[string])
+# proc zf_host_parse_num*(buf: string): zf_cell
 
 ##  Flags and length encoded in words
 
@@ -150,6 +150,15 @@ proc newZStack*(maximum: zf_cell): ZStack =
   result.maximum = 0
   result.data = newSeqOfCap[zf_cell](maximum)
 
+proc push*(stack: ZStack, val: zf_cell) = 
+  if len(stack.data) < stack.maximum:
+    stack.data.add(val)
+  else:
+    raise newException(CatchableError, "push overflow")
+
+proc pop*(stack: ZStack): zf_cell = 
+  stack.data.pop()
+
 var
   rstack*: ZStack = newZStack(ZF_RSTACK_SIZE)
   dstack*: ZStack = newZStack(ZF_DSTACK_SIZE)
@@ -182,14 +191,15 @@ const
 
 ##  Prototypes
 
-proc do_prim*(prim: zf_primitive; input: string)
-proc dict_get_cell*(`addr`: zf_addr; v: ref zf_cell): zf_addr
-proc dict_get_bytes*(`addr`: zf_addr; buf: pointer; len: csize)
+# proc do_prim*(prim: zf_primitive; input: string)
+
+# proc dict_get_cell*(zaddr: zf_addr; v: ref zf_cell): zf_addr
+# proc dict_get_bytes*(zaddr: zf_addr; buf: pointer; len: size)
 ##  Tracing functions. If disabled, the trace() function is replaced by an empty
 ##  macro, allowing the compiler to optimize away the function calls to
 ##  op_name()
 
-proc trace*(fmt: cstring) {.varargs.} =
+proc trace*(fmt: string) {.varargs.} =
   discard
 
 proc op_name*(zaddr: zf_addr): string =
@@ -296,7 +306,7 @@ proc dict_put_cell_typed*(`addr`: zf_addr; v: zf_cell; size: zf_mem_size): zf_ad
   zf_abort(ZF_ABORT_INVALID_SIZE)
   return 0
 
-proc dict_get_cell_typed*(`addr`: zf_addr; v: ref zf_cell; size: zf_mem_size): zf_addr =
+proc dict_get_cell_typed*(zaddr: zf_addr; v: ref zf_cell; size: zf_mem_size): zf_addr =
   var t: array[2, uint8]
   dict_get_bytes(`addr`, t, sizeof((t)))
   if size == ZF_MEM_SIZE_VAR:
