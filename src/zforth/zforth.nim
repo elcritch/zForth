@@ -2,7 +2,7 @@ import tables, options
 
 type
   zf_cell* = int
-  zf_addr* = ref zf_cell
+  zf_addr* = uint
 
 const
   ZF_CELL_FMT* = "%.14g"
@@ -64,7 +64,7 @@ proc zf_pick*(n: zf_addr): zf_cell
 proc zf_sc*(): zf_cell
 ##  Host provides these functions
 
-proc zf_host_sys*(id: zf_syscall_id; last_word: string): zf_input_state
+# proc zf_host_sys*(id: zf_syscall_id; last_word: string): zf_input_state
 # proc zf_host_trace*(fmt: string; va: seq[string])
 # proc zf_host_parse_num*(buf: string): zf_cell
 
@@ -157,12 +157,16 @@ proc push*(stack: ZStack, val: zf_cell) =
     raise newException(CatchableError, "push overflow")
 
 proc pop*(stack: ZStack): zf_cell = 
-  stack.data.pop()
+  return stack.data.pop()
+
+proc pick*(stack: ZStack, idx: zf_addr): zf_cell = 
+  return stack.data[idx]
 
 var
   rstack*: ZStack = newZStack(ZF_RSTACK_SIZE)
   dstack*: ZStack = newZStack(ZF_DSTACK_SIZE)
-  dict*: Table[string, seq[zf_cell]]
+  zcodes*: ZStack = newZStack(ZF_DICT_SIZE)
+  dict*: Table[string, zf_addr]
 
 ##  State and stack and interpreter pointers
 var
@@ -218,42 +222,28 @@ proc zf_abort*(reason: zf_result) =
 ##
 
 proc zf_push*(v: zf_cell) =
-  ##  ZF_INLINE
-  # CHECK(dsp < ZF_DSTACK_SIZE, ZF_ABORT_DSTACK_OVERRUN)
   trace("»", ZF_CELL_FMT, " ", v)
-  dstack[inc(dsp)] = v
+  dstack.push(v)
 
 proc zf_pop*(): zf_cell =
-  ##  ZF_INLINE
   var v: zf_cell
-  CHECK(dsp > 0, ZF_ABORT_DSTACK_UNDERRUN)
-  v = dstack[dec(dsp)]
+  v = dstack.pop()
   trace("«", ZF_CELL_FMT, " ", v)
   return v
 
 proc zf_pick*(n: zf_addr): zf_cell =
-  ##  ZF_INLINE
-  CHECK(n < dsp, ZF_ABORT_DSTACK_UNDERRUN)
-  return dstack[dsp - n - 1]
+  return dstack.pick(n)
 
 proc zf_pushr*(v: zf_cell) =
-  ##  ZF_INLINE
-  CHECK(rsp < ZF_RSTACK_SIZE, ZF_ABORT_RSTACK_OVERRUN)
   trace("r»", ZF_CELL_FMT, " ", v)
-  rstack[inc(rsp)] = v
+  rstack.push(v)
 
 proc zf_popr*(): zf_cell =
-  ##  ZF_INLINE
-  var v: zf_cell
-  CHECK(rsp > 0, ZF_ABORT_RSTACK_UNDERRUN)
-  v = rstack[dec(rsp)]
-  trace("r«", ZF_CELL_FMT, " ", v)
-  return v
+  result = rstack.pop()
 
 proc zf_pickr*(n: zf_addr): zf_cell =
   ##  ZF_INLINE
-  CHECK(n < rsp, ZF_ABORT_RSTACK_UNDERRUN)
-  return rstack[rsp - n - 1]
+  return rstack.pick(rsp - n - 1)
 
 ##
 ##  zf_cells are encoded in the dictionary with a variable length:
@@ -274,61 +264,6 @@ template GET*(s, t: untyped): void =
 
 template PUT*(s, t, val: untyped): void =
   nil
-
-##  #endif
-
-proc dict_put_cell_typed*(`addr`: zf_addr; v: zf_cell; size: zf_mem_size): zf_addr =
-  var vi: cuint = v
-  var t: array[2, uint8]
-  trace("\n+", ZF_ADDR_FMT, " ", ZF_ADDR_FMT, `addr`, cast[zf_addr](v))
-  if size == ZF_MEM_SIZE_VAR:
-    if (v - vi) == 0:
-      if vi < 128:
-        trace(" ¹")
-        t[0] = vi
-        return dict_put_bytes(`addr`, t, 1)
-      if vi < 16384:
-        trace(" ²")
-        t[0] = (vi shr 8) or 0x00000080
-        t[1] = vi
-        return dict_put_bytes(`addr`, t, sizeof((t)))
-    trace(" ⁵")
-    t[0] = 0x000000FF
-    return dict_put_bytes(`addr` + 0, t, 1) +
-        dict_put_bytes(`addr` + 1, addr(v), sizeof((v)))
-  PUT(ZF_MEM_SIZE_CELL, zf_cell, v)
-  PUT(ZF_MEM_SIZE_U8, uint8, vi)
-  PUT(ZF_MEM_SIZE_U16, uint16_t, vi)
-  PUT(ZF_MEM_SIZE_U32, uint32_t, vi)
-  PUT(ZF_MEM_SIZE_S8, int8_t, vi)
-  PUT(ZF_MEM_SIZE_S16, int16_t, vi)
-  PUT(ZF_MEM_SIZE_S32, int32_t, vi)
-  zf_abort(ZF_ABORT_INVALID_SIZE)
-  return 0
-
-proc dict_get_cell_typed*(zaddr: zf_addr; v: ref zf_cell; size: zf_mem_size): zf_addr =
-  var t: array[2, uint8]
-  dict_get_bytes(`addr`, t, sizeof((t)))
-  if size == ZF_MEM_SIZE_VAR:
-    if t[0] and 0x00000080:
-      if t[0] == 0x000000FF:
-        dict_get_bytes(`addr` + 1, v, sizeof((v[])))
-        return 1 + sizeof((v[]))
-      else:
-        v[] = ((t[0] and 0x0000003F) shl 8) + t[1]
-        return 2
-    else:
-      v[] = t[0]
-      return 1
-  GET(ZF_MEM_SIZE_CELL, zf_cell)
-  GET(ZF_MEM_SIZE_U8, uint8)
-  GET(ZF_MEM_SIZE_U16, uint16_t)
-  GET(ZF_MEM_SIZE_U32, uint32_t)
-  GET(ZF_MEM_SIZE_S8, int8_t)
-  GET(ZF_MEM_SIZE_S16, int16_t)
-  GET(ZF_MEM_SIZE_S32, int32_t)
-  zf_abort(ZF_ABORT_INVALID_SIZE)
-  return 0
 
 ##
 ##  Shortcut functions for cell access with variable cell size
