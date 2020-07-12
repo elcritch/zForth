@@ -84,7 +84,7 @@ static jmp_buf jmpbuf;
 
 #define HERE      uservar[0]    /* compilation pointer in dictionary */
 #define LATEST    uservar[1]    /* pointer to last compiled word */
-/* #define TRACE     uservar[2]    /\* trace enable flag *\/ */
+#define TRACE     uservar[2]    /* trace enable flag */ 
 #define COMPILING uservar[3]    /* compiling flag */
 #define POSTPONE  uservar[4]    /* flag to indicate next imm word should be compiled */
 #define USERVAR_COUNT 4
