@@ -280,8 +280,20 @@ static void dict_get_bytes(zf_addr addr, void *buf, size_t len)
  */
 
 // #if ZF_ENABLE_TYPED_MEM_ACCESS
-// #define GET(s, t) if(size == s) { t v ## t; dict_get_bytes(addr, &v ## t, sizeof(t)); *v = v ## t; return sizeof(t); };
-// #define PUT(s, t, val) if(size == s) { t v ## t = val; return dict_put_bytes(addr, &v ## t, sizeof(t)); }
+#define GET(s, t) {
+	if(size == s) {
+		t v ## t;
+		dict_get_bytes(addr, &v ## t, sizeof(t));
+		*v = v ## t;
+		return sizeof(t);
+	};
+}
+#define PUT(s, t, val) {
+	if(size == s) {
+		t v ## t = val;
+		return dict_put_bytes(addr, &v ## t, sizeof(t));
+	}
+}
 // #else
 #define GET(s, t)
 #define PUT(s, t, val)
