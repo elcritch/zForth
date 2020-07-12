@@ -1,0 +1,696 @@
+import
+  zforth
+
+##  Flags and length encoded in words
+
+const
+  ZF_FLAG_IMMEDIATE* = (1 shl 6)
+  ZF_FLAG_PRIM* = (1 shl 5)
+
+template ZF_FLAG_LEN*(v: untyped): untyped =
+  (v and 0x0000001F)
+
+when ZF_ENABLE_INLINE:
+  const
+    ZF_INLINE* = inline
+else:
+  const
+    ZF_INLINE* = true
+##  This macro is used to perform boundary checks. If ZF_ENABLE_BOUNDARY_CHECKS
+##  is set to 0, the boundary check code will not be compiled in to reduce size
+
+when ZF_ENABLE_BOUNDARY_CHECKS:
+  template CHECK*(exp, abort: untyped): void =
+    if not (exp):
+      zf_abort(abort)
+
+else:
+  template CHECK*(exp, abort: untyped): void =
+    nil
+
+##  Define all primitives, make sure the two tables below always match.  The
+##  names are defined as a \0 separated list, terminated by double \0. This
+##  saves space on the pointers compared to an array of strings. Immediates are
+##  prefixed by an underscore, which is later stripped of when putting the name
+##  in the dictionary.
+
+template WRD*(s: untyped): untyped =
+  (s)
+
+type
+  zf_prim_e* = enum
+    PRIM_EXIT, PRIM_LIT, PRIM_LTZ, PRIM_COL, PRIM_SEMICOL, PRIM_ADD, PRIM_SUB,
+    PRIM_MUL, PRIM_DIV, PRIM_MOD, PRIM_DROP, PRIM_DUP, PRIM_PICKR, PRIM_IMMEDIATE,
+    PRIM_PEEK, PRIM_POKE, PRIM_SWAP, PRIM_ROT, PRIM_JMP, PRIM_JMP0, PRIM_TICK,
+    PRIM_COMMENT, PRIM_PUSHR, PRIM_POPR, PRIM_EQUAL, PRIM_SYS, PRIM_PICK, PRIM_COMMA,
+    PRIM_KEY, PRIM_LITS, PRIM_LEN, PRIM_AND, PRIM_COUNT
+
+
+type
+  zf_prim* = zf_prim_e
+
+var prim_names*: ref char = [WRD("exit"), WRD("lit"), WRD("<0"), WRD(":"), WRD("_;"),
+                        WRD("+"), WRD("-"), WRD("*"), WRD("/"), WRD("%"),
+                        WRD("drop"), WRD("dup"), WRD("pickr"), WRD("_immediate"),
+                        WRD("@@"), WRD("!!"), WRD("swap"), WRD("rot"), WRD("jmp"),
+                        WRD("jmp0"), WRD("\'"), WRD("WRD("), WRD(">r"), WRD("r>"),
+                        WRD("="), WRD("sys"), WRD("pick"), WRD(",,"), WRD("key"),
+                        WRD("lits"), WRD("##"), WRD("&")]
+
+##  Stacks and dictionary memory
+
+var rstack*: array[ZF_RSTACK_SIZE, zf_cell]
+
+var dstack*: array[ZF_DSTACK_SIZE, zf_cell]
+
+var dict*: array[ZF_DICT_SIZE, uint8_t]
+
+##  State and stack and interpreter pointers
+
+var input_state*: zf_input_state
+
+var dsp*: zf_addr
+
+var rsp*: zf_addr
+
+var ip*: zf_addr
+
+##  setjmp env for handling aborts
+
+var jmpbuf*: jmp_buf
+
+##  User variables are variables which are shared between forth and C. From
+##  forth these can be accessed with @ and ! at pseudo-indices in low memory, in
+##  C they are stored in an array of zf_addr with friendly reference names
+##  through some macros
+
+const
+  HERE* = uservar[0]            ##  compilation pointer in dictionary
+  LATEST* = uservar[1]          ##  pointer to last compiled word
+  TRACE* = uservar[2]           ##  trace enable flag
+  COMPILING* = uservar[3]       ##  compiling flag
+  POSTPONE* = uservar[4]        ##  flag to indicate next imm word should be compiled
+  USERVAR_COUNT* = 4
+
+var uservar_names*: ref char = [WRD("h"), WRD("latest"), WRD("compiling"),
+                           WRD("_postpone")]
+
+var uservar*: ref zf_addr = cast[ref zf_addr](dict)
+
+##  Prototypes
+
+proc do_prim*(prim: zf_prim; input: cstring)
+proc dict_get_cell*(`addr`: zf_addr; v: ref zf_cell): zf_addr
+proc dict_get_bytes*(`addr`: zf_addr; buf: pointer; len: csize)
+##  Tracing functions. If disabled, the trace() function is replaced by an empty
+##  macro, allowing the compiler to optimize away the function calls to
+##  op_name()
+
+when ZF_ENABLE_TRACE:
+  proc trace*(fmt: cstring) {.varargs.} =
+    if TRACE:
+      var va: va_list
+      va_start(va, fmt)
+      zf_host_trace(fmt, va)
+      va_end(va)
+
+  proc op_name*(`addr`: zf_addr): cstring =
+    var w: zf_addr = LATEST
+    var name: array[32, char]
+    while TRACE and w:
+      var
+        xt: zf_addr
+        p: zf_addr = w
+      var
+        d: zf_cell
+        link: zf_cell
+        op2: zf_cell
+      var lenflags: cint
+      inc(p, dict_get_cell(p, addr(d)))
+      lenflags = d
+      inc(p, dict_get_cell(p, addr(link)))
+      xt = p + ZF_FLAG_LEN(lenflags)
+      dict_get_cell(xt, addr(op2))
+      if ((lenflags and ZF_FLAG_PRIM) and `addr` == cast[zf_addr](op2)) or `addr` == w or
+          `addr` == xt:
+        var l: cint = ZF_FLAG_LEN(lenflags)
+        dict_get_bytes(p, name, l)
+        name[l] = '\x00'
+        return name
+      w = link
+    return "?"
+
+else:
+  proc trace*(fmt: cstring) {.varargs.} =
+    discard
+
+  proc op_name*(`addr`: zf_addr): cstring =
+    return nil
+
+##
+##  Handle abort by unwinding the C stack and sending control back into
+##  zf_eval()
+##
+
+proc zf_abort*(reason: zf_result) =
+  longjmp(jmpbuf, reason)
+
+##
+##  Stack operations.
+##
+
+proc zf_push*(v: zf_cell) =
+  ##  ZF_INLINE
+  CHECK(dsp < ZF_DSTACK_SIZE, ZF_ABORT_DSTACK_OVERRUN)
+  trace("»", ZF_CELL_FMT, " ", v)
+  dstack[inc(dsp)] = v
+
+proc zf_pop*(): zf_cell =
+  ##  ZF_INLINE
+  var v: zf_cell
+  CHECK(dsp > 0, ZF_ABORT_DSTACK_UNDERRUN)
+  v = dstack[dec(dsp)]
+  trace("«", ZF_CELL_FMT, " ", v)
+  return v
+
+proc zf_pick*(n: zf_addr): zf_cell =
+  ##  ZF_INLINE
+  CHECK(n < dsp, ZF_ABORT_DSTACK_UNDERRUN)
+  return dstack[dsp - n - 1]
+
+proc zf_pushr*(v: zf_cell) =
+  ##  ZF_INLINE
+  CHECK(rsp < ZF_RSTACK_SIZE, ZF_ABORT_RSTACK_OVERRUN)
+  trace("r»", ZF_CELL_FMT, " ", v)
+  rstack[inc(rsp)] = v
+
+proc zf_popr*(): zf_cell =
+  ##  ZF_INLINE
+  var v: zf_cell
+  CHECK(rsp > 0, ZF_ABORT_RSTACK_UNDERRUN)
+  v = rstack[dec(rsp)]
+  trace("r«", ZF_CELL_FMT, " ", v)
+  return v
+
+proc zf_pickr*(n: zf_addr): zf_cell =
+  ##  ZF_INLINE
+  CHECK(n < rsp, ZF_ABORT_RSTACK_UNDERRUN)
+  return rstack[rsp - n - 1]
+
+##
+##  All access to dictionary memory is done through these functions.
+##
+
+proc dict_put_bytes*(`addr`: zf_addr; buf: pointer; len: csize): zf_addr =
+  var p: ref uint8_t = cast[ref uint8_t](buf)
+  var i: csize = len
+  CHECK(`addr` < ZF_DICT_SIZE - len, ZF_ABORT_OUTSIDE_MEM)
+  while dec(i):
+    dict[inc(`addr`)] = inc(p)[]
+  return len
+
+proc dict_get_bytes*(`addr`: zf_addr; buf: pointer; len: csize) =
+  var p: ref uint8_t = cast[ref uint8_t](buf)
+  CHECK(`addr` < ZF_DICT_SIZE - len, ZF_ABORT_OUTSIDE_MEM)
+  while dec(len):
+    inc(p)[] = dict[inc(`addr`)]
+
+##
+##  zf_cells are encoded in the dictionary with a variable length:
+##
+##  encode:
+##
+##     integer   0 ..   127  0xxxxxxx
+##     integer 128 .. 16383  10xxxxxx xxxxxxxx
+##     else                  11111111 <raw copy of zf_cell>
+##
+##  #if ZF_ENABLE_TYPED_MEM_ACCESS
+##  #define GET(s, t) if(size == s) { t v ## t; dict_get_bytes(addr, &v ## t, sizeof(t)); *v = v ## t; return sizeof(t); };
+##  #define PUT(s, t, val) if(size == s) { t v ## t = val; return dict_put_bytes(addr, &v ## t, sizeof(t)); }
+##  #else
+
+template GET*(s, t: untyped): void =
+  nil
+
+template PUT*(s, t, val: untyped): void =
+  nil
+
+##  #endif
+
+proc dict_put_cell_typed*(`addr`: zf_addr; v: zf_cell; size: zf_mem_size): zf_addr =
+  var vi: cuint = v
+  var t: array[2, uint8_t]
+  trace("\n+", ZF_ADDR_FMT, " ", ZF_ADDR_FMT, `addr`, cast[zf_addr](v))
+  if size == ZF_MEM_SIZE_VAR:
+    if (v - vi) == 0:
+      if vi < 128:
+        trace(" ¹")
+        t[0] = vi
+        return dict_put_bytes(`addr`, t, 1)
+      if vi < 16384:
+        trace(" ²")
+        t[0] = (vi shr 8) or 0x00000080
+        t[1] = vi
+        return dict_put_bytes(`addr`, t, sizeof((t)))
+    trace(" ⁵")
+    t[0] = 0x000000FF
+    return dict_put_bytes(`addr` + 0, t, 1) +
+        dict_put_bytes(`addr` + 1, addr(v), sizeof((v)))
+  PUT(ZF_MEM_SIZE_CELL, zf_cell, v)
+  PUT(ZF_MEM_SIZE_U8, uint8_t, vi)
+  PUT(ZF_MEM_SIZE_U16, uint16_t, vi)
+  PUT(ZF_MEM_SIZE_U32, uint32_t, vi)
+  PUT(ZF_MEM_SIZE_S8, int8_t, vi)
+  PUT(ZF_MEM_SIZE_S16, int16_t, vi)
+  PUT(ZF_MEM_SIZE_S32, int32_t, vi)
+  zf_abort(ZF_ABORT_INVALID_SIZE)
+  return 0
+
+proc dict_get_cell_typed*(`addr`: zf_addr; v: ref zf_cell; size: zf_mem_size): zf_addr =
+  var t: array[2, uint8_t]
+  dict_get_bytes(`addr`, t, sizeof((t)))
+  if size == ZF_MEM_SIZE_VAR:
+    if t[0] and 0x00000080:
+      if t[0] == 0x000000FF:
+        dict_get_bytes(`addr` + 1, v, sizeof((v[])))
+        return 1 + sizeof((v[]))
+      else:
+        v[] = ((t[0] and 0x0000003F) shl 8) + t[1]
+        return 2
+    else:
+      v[] = t[0]
+      return 1
+  GET(ZF_MEM_SIZE_CELL, zf_cell)
+  GET(ZF_MEM_SIZE_U8, uint8_t)
+  GET(ZF_MEM_SIZE_U16, uint16_t)
+  GET(ZF_MEM_SIZE_U32, uint32_t)
+  GET(ZF_MEM_SIZE_S8, int8_t)
+  GET(ZF_MEM_SIZE_S16, int16_t)
+  GET(ZF_MEM_SIZE_S32, int32_t)
+  zf_abort(ZF_ABORT_INVALID_SIZE)
+  return 0
+
+##
+##  Shortcut functions for cell access with variable cell size
+##
+
+proc dict_put_cell*(`addr`: zf_addr; v: zf_cell): zf_addr =
+  return dict_put_cell_typed(`addr`, v, ZF_MEM_SIZE_VAR)
+
+proc dict_get_cell*(`addr`: zf_addr; v: ref zf_cell): zf_addr =
+  return dict_get_cell_typed(`addr`, v, ZF_MEM_SIZE_VAR)
+
+##
+##  Generic dictionary adding, these functions all add at the HERE pointer and
+##  increase the pointer
+##
+
+proc dict_add_cell_typed*(v: zf_cell; size: zf_mem_size) =
+  inc(HERE, dict_put_cell_typed(HERE, v, size))
+  trace(" ")
+
+proc dict_add_cell*(v: zf_cell) =
+  dict_add_cell_typed(v, ZF_MEM_SIZE_VAR)
+
+proc dict_add_op*(op: zf_addr) =
+  dict_add_cell(op)
+  trace("+%s ", op_name(op))
+
+proc dict_add_lit*(v: zf_cell) =
+  dict_add_op(PRIM_LIT)
+  dict_add_cell(v)
+
+proc dict_add_str*(s: cstring) =
+  var l: csize
+  trace("\n+", ZF_ADDR_FMT, " ", ZF_ADDR_FMT, " s \'%s\'", HERE, 0, s)
+  l = strlen(s)
+  inc(HERE, dict_put_bytes(HERE, s, l))
+
+##
+##  Create new word, adjusting HERE and LATEST accordingly
+##
+
+proc create*(name: cstring; flags: cint) =
+  var here_prev: zf_addr
+  trace("\n=== create \'%s\'", name)
+  here_prev = HERE
+  dict_add_cell((strlen(name)) or flags)
+  dict_add_cell(LATEST)
+  dict_add_str(name)
+  LATEST = here_prev
+  trace("\n===")
+
+##
+##  Find word in dictionary, returning address and execution token
+##
+
+proc find_word*(name: cstring; word: ref zf_addr; code: ref zf_addr): cint =
+  var w: zf_addr = LATEST
+  var namelen: csize = strlen(name)
+  while w:
+    var
+      link: zf_cell
+      d: zf_cell
+    var p: zf_addr = w
+    var len: csize
+    inc(p, dict_get_cell(p, addr(d)))
+    inc(p, dict_get_cell(p, addr(link)))
+    len = ZF_FLAG_LEN(cast[cint](d))
+    if len == namelen:
+      var name2: cstring = cast[cstring](addr(dict[p]))
+      if memcmp(name, name2, len) == 0:
+        word[] = w
+        code[] = p + len
+        return 1
+    w = link
+  return 0
+
+##
+##  Set 'immediate' flag in last compiled word
+##
+
+proc make_immediate*() =
+  var lenflags: zf_cell
+  dict_get_cell(LATEST, addr(lenflags))
+  dict_put_cell(LATEST, cast[cint](lenflags) or ZF_FLAG_IMMEDIATE)
+
+##
+##  Inner interpreter
+##
+
+proc run*(input: cstring) =
+  while ip != 0:
+    var d: zf_cell
+    var
+      i: zf_addr
+      ip_org: zf_addr = ip
+    var l: zf_addr = dict_get_cell(ip, addr(d))
+    var code: zf_addr = d
+    trace("\n ", ZF_ADDR_FMT, " ", ZF_ADDR_FMT, " ", ip, code)
+    i = 0
+    while i < rsp:
+      trace("┊  ")
+      inc(i)
+    inc(ip, l)
+    if code <= PRIM_COUNT:
+      do_prim(cast[zf_prim](code), input)
+      ##  If the prim requests input, restore IP so that the
+      ##  next time around we call the same prim again
+      if input_state != ZF_INPUT_INTERPRET:
+        ip = ip_org
+        break
+    else:
+      trace("%s/", ZF_ADDR_FMT, " ", op_name(code), code)
+      zf_pushr(ip)
+      ip = code
+    input = nil
+
+##
+##  Execute bytecode from given address
+##
+
+proc execute*(`addr`: zf_addr) =
+  ip = `addr`
+  rsp = 0
+  zf_pushr(0)
+  trace("\n[%s/", ZF_ADDR_FMT, "] ", op_name(ip), ip)
+  run(nil)
+
+proc peek*(`addr`: zf_addr; val: ref zf_cell; len: cint): zf_addr =
+  if `addr` < USERVAR_COUNT:
+    val[] = uservar[`addr`]
+    return 1
+  else:
+    return dict_get_cell_typed(`addr`, val, cast[zf_mem_size](len))
+
+##
+##  Run primitive opcode
+##
+
+proc do_prim*(op: zf_prim; input: cstring) =
+  var
+    d1: zf_cell
+    d2: zf_cell
+    d3: zf_cell
+  var
+    `addr`: zf_addr
+    len: zf_addr
+  trace("(%s) ", op_name(op))
+  case op
+  of PRIM_COL:
+    if input == nil:
+      input_state = ZF_INPUT_PASS_WORD
+    else:
+      create(input, 0)
+      COMPILING = 1
+  of PRIM_LTZ:
+    zf_push(zf_pop() < 0)
+  of PRIM_SEMICOL:
+    dict_add_op(PRIM_EXIT)
+    trace("\n===")
+    COMPILING = 0
+  of PRIM_LIT:
+    inc(ip, dict_get_cell(ip, addr(d1)))
+    zf_push(d1)
+  of PRIM_EXIT:
+    ip = zf_popr()
+  of PRIM_LEN:
+    len = zf_pop()
+    `addr` = zf_pop()
+    zf_push(peek(`addr`, addr(d1), len))
+  of PRIM_PEEK:
+    len = zf_pop()
+    `addr` = zf_pop()
+    peek(`addr`, addr(d1), len)
+    zf_push(d1)
+  of PRIM_POKE:
+    d2 = zf_pop()
+    `addr` = zf_pop()
+    d1 = zf_pop()
+    if `addr` < USERVAR_COUNT:
+      uservar[`addr`] = d1
+      break
+    dict_put_cell_typed(`addr`, d1, cast[zf_mem_size](d2))
+  of PRIM_SWAP:
+    d1 = zf_pop()
+    d2 = zf_pop()
+    zf_push(d1)
+    zf_push(d2)
+  of PRIM_ROT:
+    d1 = zf_pop()
+    d2 = zf_pop()
+    d3 = zf_pop()
+    zf_push(d2)
+    zf_push(d1)
+    zf_push(d3)
+  of PRIM_DROP:
+    zf_pop()
+  of PRIM_DUP:
+    d1 = zf_pop()
+    zf_push(d1)
+    zf_push(d1)
+  of PRIM_ADD:
+    d1 = zf_pop()
+    d2 = zf_pop()
+    zf_push(d1 + d2)
+  of PRIM_SYS:
+    d1 = zf_pop()
+    input_state = zf_host_sys(cast[zf_syscall_id](d1), input)
+    if input_state != ZF_INPUT_INTERPRET:
+      zf_push(d1)
+      ##  re-push id to resume
+  of PRIM_PICK:
+    `addr` = zf_pop()
+    zf_push(zf_pick(`addr`))
+  of PRIM_PICKR:
+    `addr` = zf_pop()
+    zf_push(zf_pickr(`addr`))
+  of PRIM_SUB:
+    d1 = zf_pop()
+    d2 = zf_pop()
+    zf_push(d2 - d1)
+  of PRIM_MUL:
+    zf_push(zf_pop() * zf_pop())
+  of PRIM_IMMEDIATE:
+    make_immediate()
+  of PRIM_JMP:
+    inc(ip, dict_get_cell(ip, addr(d1)))
+    trace("ip ", ZF_ADDR_FMT, "=>", ZF_ADDR_FMT, ip, cast[zf_addr](d1))
+    ip = d1
+  of PRIM_JMP0:
+    inc(ip, dict_get_cell(ip, addr(d1)))
+    if zf_pop() == 0:
+      trace("ip ", ZF_ADDR_FMT, "=>", ZF_ADDR_FMT, ip, cast[zf_addr](d1))
+      ip = d1
+  of PRIM_TICK:
+    inc(ip, dict_get_cell(ip, addr(d1)))
+    trace("%s/", op_name(d1))
+    zf_push(d1)
+  of PRIM_COMMA:
+    d2 = zf_pop()
+    d1 = zf_pop()
+    dict_add_cell_typed(d1, cast[zf_mem_size](d2))
+  of PRIM_COMMENT:
+    if not input or input[0] != ')':
+      input_state = ZF_INPUT_PASS_CHAR
+  of PRIM_PUSHR:
+    zf_pushr(zf_pop())
+  of PRIM_POPR:
+    zf_push(zf_popr())
+  of PRIM_EQUAL:
+    zf_push(zf_pop() == zf_pop())
+  of PRIM_KEY:
+    if input == nil:
+      input_state = ZF_INPUT_PASS_CHAR
+    else:
+      zf_push(input[0])
+  of PRIM_LITS:
+    inc(ip, dict_get_cell(ip, addr(d1)))
+    zf_push(ip)
+    zf_push(d1)
+    inc(ip, d1)
+  of PRIM_AND:
+    zf_push(cast[cint](zf_pop()) and cast[cint](zf_pop()))
+  else:
+    zf_abort(ZF_ABORT_INTERNAL_ERROR)
+
+##
+##  Handle incoming word. Compile or interpreted the word, or pass it to a
+##  deferred primitive if it requested a word from the input stream.
+##
+
+proc handle_word*(buf: cstring) =
+  var
+    w: zf_addr
+    c: zf_addr = 0
+  var found: cint
+  ##  If a word was requested by an earlier operation, resume with the new
+  ##  word
+  if input_state == ZF_INPUT_PASS_WORD:
+    input_state = ZF_INPUT_INTERPRET
+    run(buf)
+    return
+  found = find_word(buf, addr(w), addr(c))
+  if found:
+    ##  Word found: compile or execute, depending on flags and state
+    var d: zf_cell
+    var flags: cint
+    dict_get_cell(w, addr(d))
+    flags = d
+    if COMPILING and (POSTPONE or not (flags and ZF_FLAG_IMMEDIATE)):
+      if flags and ZF_FLAG_PRIM:
+        dict_get_cell(c, addr(d))
+        dict_add_op(d)
+      else:
+        dict_add_op(c)
+      POSTPONE = 0
+    else:
+      execute(c)
+  else:
+    ##  Word not found: try to convert to a number and compile or push, depending
+    ##  on state
+    var v: zf_cell = zf_host_parse_num(buf)
+    if COMPILING:
+      dict_add_lit(v)
+    else:
+      zf_push(v)
+
+##
+##  Handle one character. Split into words to pass to handle_word(), or pass the
+##  char to a deferred prim if it requested a character from the input stream
+##
+
+proc handle_char*(c: char) =
+  var buf: array[32, char]
+  var len: csize = 0
+  if input_state == ZF_INPUT_PASS_CHAR:
+    input_state = ZF_INPUT_INTERPRET
+    run(addr(c))
+  elif c != '\x00' and not isspace(c):
+    if len < sizeof((buf)) - 1:
+      buf[inc(len)] = c
+      buf[len] = '\x00'
+  else:
+    if len > 0:
+      len = 0
+      handle_word(buf)
+
+##
+##  Initialisation
+##
+
+proc zf_init*() =
+  HERE = USERVAR_COUNT * sizeof((zf_addr))
+  LATEST = 0
+  dsp = 0
+  rsp = 0
+  COMPILING = 0
+
+when ZF_ENABLE_BOOTSTRAP:
+  ##
+  ##  Functions for bootstrapping the dictionary by adding all primitive ops and the
+  ##  user variables.
+  ##
+  proc add_prim*(name: cstring; op: zf_prim) =
+    var imm: cint = 0
+    if name[0] == '_':
+      inc(name)
+      imm = 1
+    create(name, ZF_FLAG_PRIM)
+    dict_add_op(op)
+    dict_add_op(PRIM_EXIT)
+    if imm:
+      make_immediate()
+
+  proc add_uservar*(name: cstring; `addr`: zf_addr) =
+    create(name, 0)
+    dict_add_lit(`addr`)
+    dict_add_op(PRIM_EXIT)
+
+  proc zf_bootstrap*() =
+    ##  Add primitives and user variables to dictionary
+    var i: zf_addr = 0
+    var p: cstring
+    p = prim_names
+    while p[]:
+      add_prim(p, cast[zf_prim](inc(i)))
+      inc(p, strlen(p) + 1)
+    i = 0
+    p = uservar_names
+    while p[]:
+      add_uservar(p, inc(i))
+      inc(p, strlen(p) + 1)
+
+else:
+  proc zf_bootstrap*() =
+    discard
+
+##
+##  Eval forth string
+##
+
+proc zf_eval*(buf: cstring): zf_result =
+  var r: zf_result = cast[zf_result](setjmp(jmpbuf))
+  if r == ZF_OK:
+    while true:
+      handle_char(buf[])
+      if buf[] == '\x00':
+        return ZF_OK
+      inc(buf)
+  else:
+    COMPILING = 0
+    rsp = 0
+    dsp = 0
+    return r
+
+proc zf_sc*(): zf_cell =
+  return dsp
+
+proc zf_dump*(len: ref csize): pointer =
+  if len:
+    len[] = sizeof((dict))
+  return dict
+
+##
+##  End
+##
