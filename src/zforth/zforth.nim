@@ -156,7 +156,6 @@ type
 
   UserVars* = enum
     HERE = (0, "h"),           ##  compilation pointer in dictionary
-    LATEST = "latest",
     DOTRACE = "trace",           ##  trace enable flag
     COMPILING = "compiling",       ##  compiling flag
     POSTPONE = "_postpone",        ##  flag to indicate next imm word should be compiled
@@ -216,6 +215,7 @@ var
   dsp*: ZfAddr
   rsp*: ZfAddr
   ip*: ZfAddr
+  latest_word*: string
 
 ##  setjmp env for handling aborts
 
@@ -234,7 +234,7 @@ var
 
 ##  Prototypes
 
-# proc do_prim*(prim: ZfPrimitive; input: string)
+proc do_prim*(prim: ZfPrimitive, input: string)
 
 # proc dict_get_cell*(zaddr: ZfAddr; v: ref ZfCell): ZfAddr
 # proc dict_get_bytes*(zaddr: ZfAddr; buf: pointer; len: size)
@@ -338,72 +338,53 @@ proc dict_add_lit*(v: ZfCell) =
 proc create*(name: string; flags: byte) =
   trace("\n=== create \'%s\'", name)
   words[name] = (ZfAddr(zmemory[HERE]), flags)
+  latest_word = name
   trace("\n===")
 
 ##
 ##  Find word in dictionary, returning address and execution token
 ##
 
-proc find_word*(name: cstring; word: ref ZfAddr; code: ref ZfAddr): cint =
-  var w: ZfAddr = LATEST
-  var namelen: csize = strlen(name)
-  while w:
-    var
-      link: ZfCell
-      d: ZfCell
-    var p: ZfAddr = w
-    var len: int
-    inc(p, dict_get_cell(p, addr(d)))
-    inc(p, dict_get_cell(p, addr(link)))
-    len = ZF_FLAG_LEN(cast[cint](d))
-    if len == namelen:
-      var name2: cstring = cast[cstring](addr(dict[p]))
-      if memcmp(name, name2, len) == 0:
-        word[] = w
-        code[] = p + len
-        return 1
-    w = link
-  return 0
+proc find_word*(name: string): ZfAddr =
+  return words[name].zaddr
 
 ##
 ##  Set 'immediate' flag in last compiled word
 ##
 
 proc make_immediate*() =
-  var lenflags: ZfCell
-  dict_get_cell(LATEST, addr(lenflags))
-  dict_put_cell(LATEST, cast[cint](lenflags) or ZF_FLAG_IMMEDIATE)
+  var zword: ZWord = words[latest_word]
+  words[latest_word] = (zword.zaddr, zword.flags or ZF_FLAG_IMMEDIATE)
 
 ##
 ##  Inner interpreter
 ##
 
-proc run*(input: cstring) =
+proc run*(input: string) =
   while ip != 0:
-    var d: ZfCell
-    var
-      i: ZfAddr
-      ip_org: ZfAddr = ip
-    var l: ZfAddr = dict_get_cell(ip, addr(d))
-    var code: ZfAddr = d
+    var ip_orig: ZfAddr = ip
+
+    var l: int = 1
+    var d: ZfCell = dict_get_cell(ip)
+    var code: ZfAddr = ZfAddr(d)
     trace("\n ", ZF_ADDR_FMT, " ", ZF_ADDR_FMT, " ", ip, code)
-    i = 0
+
+    var i: ZfAddr = 0
     while i < rsp:
       trace("┊  ")
       inc(i)
     inc(ip, l)
-    if code <= PRIM_COUNT:
-      do_prim(cast[ZfPrimitive](code), input)
+    if code <= PRIM_COUNT.uint:
+      do_prim(ZfPrimitive(code), input)
       ##  If the prim requests input, restore IP so that the
       ##  next time around we call the same prim again
       if input_state != ZF_INPUT_INTERPRET:
-        ip = ip_org
+        ip = ip_orig
         break
     else:
       trace("%s/", ZF_ADDR_FMT, " ", op_name(code), code)
-      zf_pushr(ip)
+      zf_pushr(ip.ZfCell)
       ip = code
-    input = nil
 
 ##
 ##  Execute bytecode from given address
@@ -427,7 +408,7 @@ proc peek*(zaddr: ZfAddr; val: ref ZfCell; len: cint): ZfAddr =
 ##  Run primitive opcode
 ##
 
-proc do_prim*(op: ZfPrimitive; input: cstring) =
+proc do_prim*(op: ZfPrimitive, input: string) =
   var
     d1: ZfCell
     d2: ZfCell
