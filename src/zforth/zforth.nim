@@ -143,7 +143,7 @@ type
 type 
   ZStack* = ref object 
     maximum: zf_cell
-    data*: seq[zf_cell]
+    data: seq[zf_cell]
 
 proc newZStack*(maximum: zf_cell): ZStack =
   result = new(ZStack)
@@ -161,6 +161,14 @@ proc pop*(stack: ZStack): zf_cell =
 
 proc pick*(stack: ZStack, idx: zf_addr): zf_cell = 
   return stack.data[idx]
+
+# Return the element at r, c
+proc `[]`*(stack: ZStack, idx: zf_addr): zf_cell =
+  result = stack.data[idx]
+
+# Set the element at r, c
+proc `[]=`*(stack: var ZStack, idx: zf_addr, val: zf_cell) =  
+  stack.data[idx] = val
 
 var
   rstack*: ZStack = newZStack(ZF_RSTACK_SIZE)
@@ -183,15 +191,14 @@ var
 ##  C they are stored in an array of zf_addr with friendly reference names
 ##  through some macros
 
-var uservars*: Table[string, seq[zf_cell]]
-
-const
-    HERE* = "h"           ##  compilation pointer in dictionary
-    LATEST* = "latest"
-    TRACE* = "trace"           ##  trace enable flag
-    COMPILING* = "compiling"       ##  compiling flag
-    POSTPONE* = "_postpone"        ##  flag to indicate next imm word should be compiled
-    USERVAR_COUNT* = "_count"
+type
+  UserVars* = enum
+    HERE = (0, "h"),           ##  compilation pointer in dictionary
+    LATEST = "latest",
+    TRACE = "trace",           ##  trace enable flag
+    COMPILING = "compiling",       ##  compiling flag
+    POSTPONE = "_postpone",        ##  flag to indicate next imm word should be compiled
+    USERVAR_COUNT = "_count"
 
 ##  Prototypes
 
@@ -264,10 +271,10 @@ proc zf_pickr*(n: zf_addr): zf_cell =
 ##
 
 proc dict_put_cell*(zaddr: zf_addr; v: zf_cell): zf_addr =
-  return dict_put_cell_typed(`addr`, v, ZF_MEM_SIZE_VAR)
+  return dict_put_cell_typed(zaddr, v, ZF_MEM_SIZE_VAR)
 
 proc dict_get_cell*(zaddr: zf_addr; v: ref zf_cell): zf_addr =
-  return dict_get_cell_typed(`addr`, v, ZF_MEM_SIZE_VAR)
+  return dict_get_cell_typed(zaddr, v, ZF_MEM_SIZE_VAR)
 
 ##
 ##  Generic dictionary adding, these functions all add at the HERE pointer and
@@ -378,19 +385,19 @@ proc run*(input: cstring) =
 ##  Execute bytecode from given address
 ##
 
-proc execute*(`addr`: zf_addr) =
-  ip = `addr`
+proc execute*(zaddr: zf_addr) =
+  ip = zaddr
   rsp = 0
   zf_pushr(0)
   trace("\n[%s/", ZF_ADDR_FMT, "] ", op_name(ip), ip)
   run(nil)
 
-proc peek*(`addr`: zf_addr; val: ref zf_cell; len: cint): zf_addr =
-  if `addr` < USERVAR_COUNT:
-    val[] = uservar[`addr`]
+proc peek*(zaddr: zf_addr; val: ref zf_cell; len: cint): zf_addr =
+  if zaddr < USERVAR_COUNT:
+    val[] = uservar[zaddr]
     return 1
   else:
-    return dict_get_cell_typed(`addr`, val, cast[zf_mem_size](len))
+    return dict_get_cell_typed(zaddr, val, cast[zf_mem_size](len))
 
 ##
 ##  Run primitive opcode
@@ -402,7 +409,7 @@ proc do_prim*(op: zf_primitive; input: cstring) =
     d2: zf_cell
     d3: zf_cell
   var
-    `addr`: zf_addr
+    zaddr: zf_addr
     len: zf_addr
   trace("(%s) ", op_name(op))
   case op
@@ -425,21 +432,21 @@ proc do_prim*(op: zf_primitive; input: cstring) =
     ip = zf_popr()
   of PRIM_LEN:
     len = zf_pop()
-    `addr` = zf_pop()
-    zf_push(peek(`addr`, addr(d1), len))
+    zaddr = zf_pop()
+    zf_push(peek(zaddr, addr(d1), len))
   of PRIM_PEEK:
     len = zf_pop()
-    `addr` = zf_pop()
-    peek(`addr`, addr(d1), len)
+    zaddr = zf_pop()
+    peek(zaddr, addr(d1), len)
     zf_push(d1)
   of PRIM_POKE:
     d2 = zf_pop()
-    `addr` = zf_pop()
+    zaddr = zf_pop()
     d1 = zf_pop()
-    if `addr` < USERVAR_COUNT:
-      uservar[`addr`] = d1
+    if zaddr < USERVAR_COUNT:
+      uservar[zaddr] = d1
       break
-    dict_put_cell_typed(`addr`, d1, cast[zf_mem_size](d2))
+    dict_put_cell_typed(zaddr, d1, cast[zf_mem_size](d2))
   of PRIM_SWAP:
     d1 = zf_pop()
     d2 = zf_pop()
@@ -469,11 +476,11 @@ proc do_prim*(op: zf_primitive; input: cstring) =
       zf_push(d1)
       ##  re-push id to resume
   of PRIM_PICK:
-    `addr` = zf_pop()
-    zf_push(zf_pick(`addr`))
+    zaddr = zf_pop()
+    zf_push(zf_pick(zaddr))
   of PRIM_PICKR:
-    `addr` = zf_pop()
-    zf_push(zf_pickr(`addr`))
+    zaddr = zf_pop()
+    zf_push(zf_pickr(zaddr))
   of PRIM_SUB:
     d1 = zf_pop()
     d2 = zf_pop()
@@ -611,9 +618,9 @@ when defined(zfBootstrap):
     if imm:
       make_immediate()
 
-  proc add_uservar*(name: cstring; `addr`: zf_addr) =
+  proc add_uservar*(name: cstring; zaddr: zf_addr) =
     create(name, 0)
-    dict_add_lit(`addr`)
+    dict_add_lit(zaddr)
     dict_add_op(PRIM_EXIT)
 
   proc zf_bootstrap*() =
