@@ -1,4 +1,4 @@
-import tables, options
+import tables, options, sequtils
 
 type
   ZfCell* = int
@@ -144,6 +144,10 @@ type
   ZStack* = ref object 
     maximum: ZfCell
     data: seq[ZfCell]
+  ZSlice* = HSlice[ZfAddr, ZfAddr]
+  ZView* = object
+    stack: ZStack
+    bounds: ZSlice
 
 proc newZStack*(maximum: ZfCell): ZStack =
   result = new(ZStack)
@@ -170,11 +174,22 @@ proc `[]`*(stack: ZStack, idx: ZfAddr): ZfCell =
 proc `[]=`*(stack: var ZStack, idx: ZfAddr, val: ZfCell) =  
   stack.data[idx] = val
 
+proc `[]`*(stack: ZStack, rng: ZSlice): ZView =
+  result = ZView()
+  result.stack = stack
+  result.bounds = rng
+
+# Set the element at r, c
+proc `[]=`*(stack: var ZStack, idx: ZfAddr, val: seq[ZfCell]) =  
+  for i in 0..len(val):
+    let j: ZfAddr = idx + i.ZfAddr
+    stack.data[j] = val[i]
+
 var
   rstack*: ZStack = newZStack(ZF_RSTACK_SIZE)
   dstack*: ZStack = newZStack(ZF_DSTACK_SIZE)
-  zcodes*: ZStack = newZStack(ZF_DICT_SIZE)
-  dict*: Table[string, ZfAddr]
+  zmemory*: ZStack = newZStack(ZF_DICT_SIZE)
+  words*: ref Table[string, ZfAddr] = newTable[string, ZfAddr](128)
 
 ##  State and stack and interpreter pointers
 var
@@ -193,12 +208,19 @@ var
 
 type
   UserVars* = enum
-    HERE = (0, "h"),           ##  compilation pointer in dictionary
-    LATEST = "latest",
-    TRACE = "trace",           ##  trace enable flag
-    COMPILING = "compiling",       ##  compiling flag
-    POSTPONE = "_postpone",        ##  flag to indicate next imm word should be compiled
-    USERVAR_COUNT = "_count"
+    here = (0, "h"),           ##  compilation pointer in dictionary
+    latest = "latest",
+    trace = "trace",           ##  trace enable flag
+    compiling = "compiling",       ##  compiling flag
+    postpone = "_postpone",        ##  flag to indicate next imm word should be compiled
+    uservar_count = "_count"
+
+template HERE* = zmemory[0]
+template LATEST* = zmemory[1]
+template TRACE* = zmemory[2]
+template COMPILING* = zmemory[3]
+template POSTPONE* = zmemory[4]
+template USERVAR_COUNT* = zmemory[5]
 
 ##  Prototypes
 
@@ -269,23 +291,28 @@ proc zf_pickr*(n: ZfAddr): ZfCell =
 ##  Shortcut functions for cell access with variable cell size
 ##
 
-proc dict_put_cell*(zaddr: ZfAddr; v: ZfCell): ZfAddr =
-  return dict_put_cell_typed(zaddr, v, ZF_MEM_SIZE_VAR)
+proc dict_put_cell*(zaddr: ZfAddr; v: ZfCell): int =
+  # return dict_put_cell_typed(zaddr, v, ZF_MEM_SIZE_VAR)
+  zmemory[zaddr] = v
 
-proc dict_get_cell*(zaddr: ZfAddr; v: ref ZfCell): ZfAddr =
-  return dict_get_cell_typed(zaddr, v, ZF_MEM_SIZE_VAR)
+
+proc dict_get_cell*(zaddr: ZfAddr): ZfCell =
+  # return dict_get_cell_typed(zaddr, v, ZF_MEM_SIZE_VAR)
+  return zmemory[zaddr]
 
 ##
 ##  Generic dictionary adding, these functions all add at the HERE pointer and
 ##  increase the pointer
 ##
 
-proc dict_add_cell_typed*(v: ZfCell; size: zf_mem_size) =
-  inc(HERE, dict_put_cell_typed(HERE, v, size))
-  trace(" ")
+# proc dict_add_cell_typed*(v: ZfCell; size: zf_mem_size) =
+  # inc(HERE, dict_put_cell_typed(HERE, v, size))
+  # trace(" ")
 
 proc dict_add_cell*(v: ZfCell) =
-  dict_add_cell_typed(v, ZF_MEM_SIZE_VAR)
+  # dict_add_cell_typed(v, ZF_MEM_SIZE_VAR)
+  zmemory[zmemory[HERE]] = v
+  inc(zmemory[HERE], dict_put_cell_typed(HERE, v, size))
 
 proc dict_add_op*(op: ZfAddr) =
   dict_add_cell(op)
