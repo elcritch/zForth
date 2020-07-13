@@ -17,7 +17,7 @@ const
   ZF_RSTACK_SIZE* = 128
 
 type
-  zf_result* = enum
+  ZfResult* = enum
     ZF_OK = 0x0,
     ZF_ABORT_INTERNAL_ERROR = 0x1,
     ZF_ABORT_OUTSIDE_MEM = 0x2,
@@ -31,7 +31,7 @@ type
     ZF_ABORT_DIVISION_BY_ZERO = 0xA,
     ZF_ABORT_UNKNOWN_SYS = 0xB,
     ZF_ABORT_UNKNOWN = 0xC
-  zf_mem_size* = enum
+  ZfMemSize* = enum
     ZF_MEM_SIZE_VAR,
     ZF_MEM_SIZE_CELL,
     ZF_MEM_SIZE_U8,
@@ -40,11 +40,11 @@ type
     ZF_MEM_SIZE_S8,
     ZF_MEM_SIZE_S16,
     ZF_MEM_SIZE_S32
-  zf_input_state* = enum
+  ZfInputState* = enum
     ZF_INPUT_INTERPRET,
     ZF_INPUT_PASS_CHAR,
     ZF_INPUT_PASS_WORD
-  zf_syscall_id* = enum
+  ZfSysCallId* = enum
     ZF_SYSCALL_EMIT,
     ZF_SYSCALL_PRINT,
     ZF_SYSCALL_TELL,
@@ -56,15 +56,15 @@ type
 proc zf_init*()
 proc zf_bootstrap*()
 proc zf_dump*(len: ref csize): pointer
-proc zf_eval*(buf: cstring): zf_result
-proc zf_abort*(reason: zf_result)
+proc zf_eval*(buf: cstring): ZfResult
+proc zf_abort*(reason: ZfResult)
 proc zf_push*(v: ZfCell)
 proc zf_pop*(): ZfCell
 proc zf_pick*(n: ZfAddr): ZfCell
 proc zf_sc*(): ZfCell
 ##  Host provides these functions
 
-# proc zf_host_sys*(id: zf_syscall_id; last_word: string): zf_input_state
+# proc zf_host_sys*(id: ZfSysCallId; last_word: string): ZfInputState
 # proc zf_host_trace*(fmt: string; va: seq[string])
 # proc zf_host_parse_num*(buf: string): ZfCell
 
@@ -102,7 +102,7 @@ else:
 ##  in the dictionary.
 
 type
-  zf_primitive* = enum
+  ZfPrimitive* = enum
     PRIM_EXIT = "exit",
     PRIM_LIT = "lit",
     PRIM_LTZ = "<0",
@@ -149,6 +149,19 @@ type
     stack: ZStack
     bounds: ZSlice
 
+type
+  ZWord* = tuple 
+    zaddr: ZfAddr
+    flags: byte
+
+  UserVars* = enum
+    HERE = (0, "h"),           ##  compilation pointer in dictionary
+    LATEST = "latest",
+    DOTRACE = "trace",           ##  trace enable flag
+    COMPILING = "compiling",       ##  compiling flag
+    POSTPONE = "_postpone",        ##  flag to indicate next imm word should be compiled
+    USERVAR_COUNT = "_count"
+
 proc newZStack*(maximum: ZfCell): ZStack =
   result = new(ZStack)
   result.maximum = 0
@@ -170,9 +183,15 @@ proc pick*(stack: ZStack, idx: ZfAddr): ZfCell =
 proc `[]`*(stack: ZStack, idx: ZfAddr): ZfCell =
   result = stack.data[idx]
 
+proc `[]`*(stack: ZStack, idx: UserVars): ZfCell =
+  result = stack.data[idx.int.ZfAddr]
+
 # Set the element at r, c
 proc `[]=`*(stack: var ZStack, idx: ZfAddr, val: ZfCell) =  
   stack.data[idx] = val
+
+proc `[]=`*(stack: var ZStack, idx: UserVars, val: ZfCell) =  
+  stack.data[idx.int.ZfAddr] = val
 
 proc `[]`*(stack: ZStack, rng: ZSlice): ZView =
   result = ZView()
@@ -189,11 +208,11 @@ var
   rstack*: ZStack = newZStack(ZF_RSTACK_SIZE)
   dstack*: ZStack = newZStack(ZF_DSTACK_SIZE)
   zmemory*: ZStack = newZStack(ZF_DICT_SIZE)
-  words*: ref Table[string, ZfAddr] = newTable[string, ZfAddr](128)
+  words*: ref Table[string, ZWord] = newTable[string, ZWord](128)
 
 ##  State and stack and interpreter pointers
 var
-  input_state*: zf_input_state
+  input_state*: ZfInputState
   dsp*: ZfAddr
   rsp*: ZfAddr
   ip*: ZfAddr
@@ -206,25 +225,16 @@ var
 ##  C they are stored in an array of ZfAddr with friendly reference names
 ##  through some macros
 
-type
-  UserVars* = enum
-    here = (0, "h"),           ##  compilation pointer in dictionary
-    latest = "latest",
-    trace = "trace",           ##  trace enable flag
-    compiling = "compiling",       ##  compiling flag
-    postpone = "_postpone",        ##  flag to indicate next imm word should be compiled
-    uservar_count = "_count"
-
-template HERE* = zmemory[0]
-template LATEST* = zmemory[1]
-template TRACE* = zmemory[2]
-template COMPILING* = zmemory[3]
-template POSTPONE* = zmemory[4]
-template USERVAR_COUNT* = zmemory[5]
+# template HERE()* = ZfAddr(zmemory[0])
+# template LATEST* = zmemory[1]
+# template TRACE* = zmemory[2]
+# template COMPILING* = zmemory[3]
+# template POSTPONE* = zmemory[4]
+# template USERVAR_COUNT* = zmemory[5]
 
 ##  Prototypes
 
-# proc do_prim*(prim: zf_primitive; input: string)
+# proc do_prim*(prim: ZfPrimitive; input: string)
 
 # proc dict_get_cell*(zaddr: ZfAddr; v: ref ZfCell): ZfAddr
 # proc dict_get_bytes*(zaddr: ZfAddr; buf: pointer; len: size)
@@ -243,8 +253,8 @@ proc op_name*(zaddr: ZfAddr): string =
 ##  zf_eval()
 ##
 
-proc zf_abort*(reason: zf_result) =
-  raise newException(CatchableError, "error: " & $zf_result)
+proc zf_abort*(reason: ZfResult) =
+  raise newException(CatchableError, "error: " & $ZfResult)
 
 ##
 ##  Stack operations.
@@ -295,7 +305,6 @@ proc dict_put_cell*(zaddr: ZfAddr; v: ZfCell): int =
   # return dict_put_cell_typed(zaddr, v, ZF_MEM_SIZE_VAR)
   zmemory[zaddr] = v
 
-
 proc dict_get_cell*(zaddr: ZfAddr): ZfCell =
   # return dict_get_cell_typed(zaddr, v, ZF_MEM_SIZE_VAR)
   return zmemory[zaddr]
@@ -305,41 +314,30 @@ proc dict_get_cell*(zaddr: ZfAddr): ZfCell =
 ##  increase the pointer
 ##
 
-# proc dict_add_cell_typed*(v: ZfCell; size: zf_mem_size) =
+# proc dict_add_cell_typed*(v: ZfCell; size: ZfMemSize) =
   # inc(HERE, dict_put_cell_typed(HERE, v, size))
   # trace(" ")
 
 proc dict_add_cell*(v: ZfCell) =
   # dict_add_cell_typed(v, ZF_MEM_SIZE_VAR)
-  zmemory[zmemory[HERE]] = v
-  inc(zmemory[HERE], dict_put_cell_typed(HERE, v, size))
+  zmemory[ZfAddr(zmemory[HERE])] = v
+  zmemory[HERE] = zmemory[HERE] + 1
 
-proc dict_add_op*(op: ZfAddr) =
-  dict_add_cell(op)
-  trace("+%s ", op_name(op))
+proc dict_add_op*(op: ZfPrimitive) =
+  dict_add_cell(ZfCell(op))
+  trace("+$1 ", [$op])
 
 proc dict_add_lit*(v: ZfCell) =
   dict_add_op(PRIM_LIT)
   dict_add_cell(v)
 
-proc dict_add_str*(s: cstring) =
-  var l: csize
-  trace("\n+", ZF_ADDR_FMT, " ", ZF_ADDR_FMT, " s \'%s\'", HERE, 0, s)
-  l = strlen(s)
-  inc(HERE, dict_put_bytes(HERE, s, l))
-
 ##
 ##  Create new word, adjusting HERE and LATEST accordingly
 ##
 
-proc create*(name: cstring; flags: cint) =
-  var here_prev: ZfAddr
+proc create*(name: string; flags: byte) =
   trace("\n=== create \'%s\'", name)
-  here_prev = HERE
-  dict_add_cell((strlen(name)) or flags)
-  dict_add_cell(LATEST)
-  dict_add_str(name)
-  LATEST = here_prev
+  words[name] = (ZfAddr(zmemory[HERE]), flags)
   trace("\n===")
 
 ##
@@ -395,7 +393,7 @@ proc run*(input: cstring) =
       inc(i)
     inc(ip, l)
     if code <= PRIM_COUNT:
-      do_prim(cast[zf_primitive](code), input)
+      do_prim(cast[ZfPrimitive](code), input)
       ##  If the prim requests input, restore IP so that the
       ##  next time around we call the same prim again
       if input_state != ZF_INPUT_INTERPRET:
@@ -423,13 +421,13 @@ proc peek*(zaddr: ZfAddr; val: ref ZfCell; len: cint): ZfAddr =
     val[] = uservar[zaddr]
     return 1
   else:
-    return dict_get_cell_typed(zaddr, val, cast[zf_mem_size](len))
+    return dict_get_cell_typed(zaddr, val, cast[ZfMemSize](len))
 
 ##
 ##  Run primitive opcode
 ##
 
-proc do_prim*(op: zf_primitive; input: cstring) =
+proc do_prim*(op: ZfPrimitive; input: cstring) =
   var
     d1: ZfCell
     d2: ZfCell
@@ -472,7 +470,7 @@ proc do_prim*(op: zf_primitive; input: cstring) =
     if zaddr < USERVAR_COUNT:
       uservar[zaddr] = d1
       break
-    dict_put_cell_typed(zaddr, d1, cast[zf_mem_size](d2))
+    dict_put_cell_typed(zaddr, d1, cast[ZfMemSize](d2))
   of PRIM_SWAP:
     d1 = zf_pop()
     d2 = zf_pop()
@@ -497,7 +495,7 @@ proc do_prim*(op: zf_primitive; input: cstring) =
     zf_push(d1 + d2)
   of PRIM_SYS:
     d1 = zf_pop()
-    input_state = zf_host_sys(cast[zf_syscall_id](d1), input)
+    input_state = zf_host_sys(cast[ZfSysCallId](d1), input)
     if input_state != ZF_INPUT_INTERPRET:
       zf_push(d1)
       ##  re-push id to resume
@@ -531,7 +529,7 @@ proc do_prim*(op: zf_primitive; input: cstring) =
   of PRIM_COMMA:
     d2 = zf_pop()
     d1 = zf_pop()
-    dict_add_cell_typed(d1, cast[zf_mem_size](d2))
+    dict_add_cell_typed(d1, cast[ZfMemSize](d2))
   of PRIM_COMMENT:
     if not input or input[0] != ')':
       input_state = ZF_INPUT_PASS_CHAR
@@ -633,7 +631,7 @@ when defined(zfBootstrap):
   ##  Functions for bootstrapping the dictionary by adding all primitive ops and the
   ##  user variables.
   ##
-  proc add_prim*(name: cstring; op: zf_primitive) =
+  proc add_prim*(name: cstring; op: ZfPrimitive) =
     var imm: cint = 0
     if name[0] == '_':
       inc(name)
@@ -655,7 +653,7 @@ when defined(zfBootstrap):
     var p: cstring
     p = prim_names
     while p[]:
-      add_prim(p, cast[zf_primitive](inc(i)))
+      add_prim(p, cast[ZfPrimitive](inc(i)))
       inc(p, strlen(p) + 1)
     i = 0
     p = uservar_names
@@ -671,8 +669,8 @@ else:
 ##  Eval forth string
 ##
 
-proc zf_eval*(buf: cstring): zf_result =
-  var r: zf_result = cast[zf_result](setjmp(jmpbuf))
+proc zf_eval*(buf: cstring): ZfResult =
+  var r: ZfResult = cast[ZfResult](setjmp(jmpbuf))
   if r == ZF_OK:
     while true:
       handle_char(buf[])
