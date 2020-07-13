@@ -234,7 +234,7 @@ var
 
 ##  Prototypes
 
-proc do_prim*(prim: ZfPrimitive, input: string)
+proc do_prim*(op: ZfPrimitive, input: Option[string])
 
 # proc dict_get_cell*(zaddr: ZfAddr; v: ref ZfCell): ZfAddr
 # proc dict_get_bytes*(zaddr: ZfAddr; buf: pointer; len: size)
@@ -360,7 +360,7 @@ proc make_immediate*() =
 ##  Inner interpreter
 ##
 
-proc run*(input: string) =
+proc run*(input: Option[string]) =
   while ip != 0:
     var ip_orig: ZfAddr = ip
 
@@ -395,20 +395,20 @@ proc execute*(zaddr: ZfAddr) =
   rsp = 0
   zf_pushr(0)
   trace("\n[%s/", ZF_ADDR_FMT, "] ", op_name(ip), ip)
-  run(nil)
+  run(none[string]())
 
-proc peek*(zaddr: ZfAddr; val: ref ZfCell; len: cint): ZfAddr =
-  if zaddr < USERVAR_COUNT:
-    val[] = uservar[zaddr]
-    return 1
+proc peek*(zaddr: ZfAddr; len: int): ZfCell =
+  if zaddr < USERVAR_COUNT.ZfAddr:
+    return zmemory[zaddr]
   else:
-    return dict_get_cell_typed(zaddr, val, cast[ZfMemSize](len))
+    # return dict_get_cell_typed(zaddr, val, cast[ZfMemSize](len))
+    return dict_get_cell(zaddr)
 
 ##
 ##  Run primitive opcode
 ##
 
-proc do_prim*(op: ZfPrimitive, input: string) =
+proc do_prim*(op: ZfPrimitive, input: Option[string]) =
   var
     d1: ZfCell
     d2: ZfCell
@@ -416,29 +416,30 @@ proc do_prim*(op: ZfPrimitive, input: string) =
   var
     zaddr: ZfAddr
     len: ZfAddr
-  trace("(%s) ", op_name(op))
+  trace("($1) ", $op)
   case op
   of PRIM_COL:
-    if input == nil:
+    if input.isNone:
       input_state = ZF_INPUT_PASS_WORD
     else:
-      create(input, 0)
-      COMPILING = 1
+      create(input.get(), 0)
+      zmemory[COMPILING] = 1
   of PRIM_LTZ:
-    zf_push(zf_pop() < 0)
+    zf_push(ZfCell(zf_pop() < 0))
   of PRIM_SEMICOL:
     dict_add_op(PRIM_EXIT)
     trace("\n===")
-    COMPILING = 0
+    zmemory[COMPILING] = 0
   of PRIM_LIT:
     inc(ip, dict_get_cell(ip, addr(d1)))
     zf_push(d1)
   of PRIM_EXIT:
-    ip = zf_popr()
+    ip = zf_popr().ZfAddr
   of PRIM_LEN:
-    len = zf_pop()
-    zaddr = zf_pop()
+    len = zf_pop().ZfAddr
+    zaddr = zf_pop().ZfAddr
     zf_push(peek(zaddr, addr(d1), len))
+    # zf_push(peek(zaddr, addr(d1), len))
   of PRIM_PEEK:
     len = zf_pop()
     zaddr = zf_pop()
@@ -446,12 +447,13 @@ proc do_prim*(op: ZfPrimitive, input: string) =
     zf_push(d1)
   of PRIM_POKE:
     d2 = zf_pop()
-    zaddr = zf_pop()
+    zaddr = zf_pop().ZfAddr
     d1 = zf_pop()
-    if zaddr < USERVAR_COUNT:
-      uservar[zaddr] = d1
+    if zaddr < USERVAR_COUNT.ZfAddr:
+      zmemory[zaddr] = d1
       break
-    dict_put_cell_typed(zaddr, d1, cast[ZfMemSize](d2))
+    # dict_put_cell_typed(zaddr, d1, cast[ZfMemSize](d2))
+    dict_put_cell(zaddr, d1, cast[ZfMemSize](d2))
   of PRIM_SWAP:
     d1 = zf_pop()
     d2 = zf_pop()
