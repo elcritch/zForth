@@ -65,8 +65,8 @@ proc zf_sc*(): ZfCell
 ##  Host provides these functions
 
 proc zf_host_sys*(id: ZfSysCallId; last_word: Option[string]): ZfInputState
-# proc zf_host_trace*(fmt: string; va: seq[string])
-# proc zf_host_parse_num*(buf: string): ZfCell
+proc zf_host_trace*(fmt: string; va: seq[string])
+proc zf_host_parse_num*(buf: string): ZfCell
 
 ##  Flags and length encoded in words
 
@@ -345,8 +345,11 @@ proc create*(name: string; flags: byte) =
 ##  Find word in dictionary, returning address and execution token
 ##
 
-proc find_word*(name: string): ZfAddr =
-  return words[name].zaddr
+proc find_word*(name: string): Option[ZWord] =
+  if words.hasKey(name):
+    return some(words[name])
+  else:
+    return none[ZWord]()
 
 ##
 ##  Set 'immediate' flag in last compiled word
@@ -497,17 +500,23 @@ proc do_prim*(op: ZfPrimitive, input: Option[string]) =
   of PRIM_IMMEDIATE:
     make_immediate()
   of PRIM_JMP:
-    inc(ip, dict_get_cell(ip, addr(d1)))
+    # inc(ip, dict_get_cell(ip, addr(d1)))
+    d1 = dict_get_cell(ip)
+    inc(ip, 1)
     trace("ip ", ZF_ADDR_FMT, "=>", ZF_ADDR_FMT, ip, d1.ZfAddr)
     ip = d1.ZfAddr
   of PRIM_JMP0:
-    inc(ip, dict_get_cell(ip, addr(d1)))
+    # inc(ip, dict_get_cell(ip, addr(d1)))
+    d1 = dict_get_cell(ip)
+    inc(ip, 1)
     if zf_pop() == 0:
       trace("ip ", ZF_ADDR_FMT, "=>", ZF_ADDR_FMT, ip, cast[ZfAddr](d1))
       ip = d1.ZfAddr
   of PRIM_TICK:
-    inc(ip, dict_get_cell(ip, addr(d1)))
-    trace("%s/", op_name(d1))
+    # inc(ip, dict_get_cell(ip, addr(d1)))
+    d1 = dict_get_cell(ip)
+    inc(ip, 1)
+    trace("%s/", $d1)
     zf_push(d1)
   of PRIM_COMMA:
     # d2 = zf_pop()
@@ -529,7 +538,9 @@ proc do_prim*(op: ZfPrimitive, input: Option[string]) =
     else:
       zf_push(ZfCell(input.get()[0]))
   of PRIM_LITS:
-    inc(ip, dict_get_cell(ip, addr(d1)))
+    # inc(ip, dict_get_cell(ip, addr(d1)))
+    d1 = dict_get_cell(ip)
+    inc(ip, 1)
     zf_push(ip.ZfCell)
     zf_push(d1)
     inc(ip, d1)
@@ -543,38 +554,39 @@ proc do_prim*(op: ZfPrimitive, input: Option[string]) =
 ##  deferred primitive if it requested a word from the input stream.
 ##
 
-proc handle_word*(buf: cstring) =
+proc handle_word*(buf: string) =
   var
-    w: ZfAddr
+    zw: ZfAddr
     c: ZfAddr = 0
-  var found: cint
+
   ##  If a word was requested by an earlier operation, resume with the new
   ##  word
   if input_state == ZF_INPUT_PASS_WORD:
     input_state = ZF_INPUT_INTERPRET
     run(buf)
     return
-  found = find_word(buf, addr(w), addr(c))
-  if found:
+  let zword: Option[ZWord] = find_word(buf)
+  if zword.isSome():
     ##  Word found: compile or execute, depending on flags and state
-    var d: ZfCell
-    var flags: cint
-    dict_get_cell(w, addr(d))
-    flags = d
-    if COMPILING and (POSTPONE or not (flags and ZF_FLAG_IMMEDIATE)):
-      if flags and ZF_FLAG_PRIM:
-        dict_get_cell(c, addr(d))
-        dict_add_op(d)
+    var flags: byte = zword.get().flag
+    zw = zword.get().zaddr
+    var d = dict_get_cell(zw)
+    flags = d.byte
+    if bool(COMPILING.byte and (POSTPONE.byte or not (flags and ZF_FLAG_IMMEDIATE.byte))):
+      if bool(flags and ZF_FLAG_PRIM.byte):
+        # dict_get_cell(c, addr(d))
+        d = dict_get_cell(c)
+        dict_add_op(d.ZfPrimitive)
       else:
         dict_add_op(c)
-      POSTPONE = 0
+      zmemory[POSTPONE] = 0
     else:
       execute(c)
   else:
     ##  Word not found: try to convert to a number and compile or push, depending
     ##  on state
     var v: ZfCell = zf_host_parse_num(buf)
-    if COMPILING:
+    if zmemory[COMPILING] != 0:
       dict_add_lit(v)
     else:
       zf_push(v)
