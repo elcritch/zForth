@@ -64,7 +64,7 @@ proc zf_pick*(n: ZfAddr): ZfCell
 proc zf_sc*(): ZfCell
 ##  Host provides these functions
 
-# proc zf_host_sys*(id: ZfSysCallId; last_word: string): ZfInputState
+proc zf_host_sys*(id: ZfSysCallId; last_word: Option[string]): ZfInputState
 # proc zf_host_trace*(fmt: string; va: seq[string])
 # proc zf_host_parse_num*(buf: string): ZfCell
 
@@ -431,7 +431,8 @@ proc do_prim*(op: ZfPrimitive, input: Option[string]) =
     trace("\n===")
     zmemory[COMPILING] = 0
   of PRIM_LIT:
-    inc(ip, dict_get_cell(ip, addr(d1)))
+    inc(ip, 1)
+    d1 = dict_get_cell(ip)
     zf_push(d1)
   of PRIM_EXIT:
     ip = zf_popr().ZfAddr
@@ -466,7 +467,7 @@ proc do_prim*(op: ZfPrimitive, input: Option[string]) =
     zf_push(d1)
     zf_push(d3)
   of PRIM_DROP:
-    zf_pop()
+    discard zf_pop()
   of PRIM_DUP:
     d1 = zf_pop()
     zf_push(d1)
@@ -477,15 +478,15 @@ proc do_prim*(op: ZfPrimitive, input: Option[string]) =
     zf_push(d1 + d2)
   of PRIM_SYS:
     d1 = zf_pop()
-    input_state = zf_host_sys(cast[ZfSysCallId](d1), input)
+    input_state = zf_host_sys(d1.ZfSysCallId, input)
     if input_state != ZF_INPUT_INTERPRET:
       zf_push(d1)
       ##  re-push id to resume
   of PRIM_PICK:
-    zaddr = zf_pop()
+    zaddr = zf_pop().ZfAddr
     zf_push(zf_pick(zaddr))
   of PRIM_PICKR:
-    zaddr = zf_pop()
+    zaddr = zf_pop().ZfAddr
     zf_push(zf_pickr(zaddr))
   of PRIM_SUB:
     d1 = zf_pop()
@@ -497,38 +498,39 @@ proc do_prim*(op: ZfPrimitive, input: Option[string]) =
     make_immediate()
   of PRIM_JMP:
     inc(ip, dict_get_cell(ip, addr(d1)))
-    trace("ip ", ZF_ADDR_FMT, "=>", ZF_ADDR_FMT, ip, cast[ZfAddr](d1))
-    ip = d1
+    trace("ip ", ZF_ADDR_FMT, "=>", ZF_ADDR_FMT, ip, d1.ZfAddr)
+    ip = d1.ZfAddr
   of PRIM_JMP0:
     inc(ip, dict_get_cell(ip, addr(d1)))
     if zf_pop() == 0:
       trace("ip ", ZF_ADDR_FMT, "=>", ZF_ADDR_FMT, ip, cast[ZfAddr](d1))
-      ip = d1
+      ip = d1.ZfAddr
   of PRIM_TICK:
     inc(ip, dict_get_cell(ip, addr(d1)))
     trace("%s/", op_name(d1))
     zf_push(d1)
   of PRIM_COMMA:
-    d2 = zf_pop()
+    # d2 = zf_pop()
     d1 = zf_pop()
-    dict_add_cell_typed(d1, cast[ZfMemSize](d2))
+    dict_add_cell(d1)
   of PRIM_COMMENT:
-    if not input or input[0] != ')':
+    # if not input or input[0] != ')':
+    if input.isNone or input.get()[0] != ')':
       input_state = ZF_INPUT_PASS_CHAR
   of PRIM_PUSHR:
     zf_pushr(zf_pop())
   of PRIM_POPR:
     zf_push(zf_popr())
   of PRIM_EQUAL:
-    zf_push(zf_pop() == zf_pop())
+    zf_push(ZfCell(zf_pop() == zf_pop()))
   of PRIM_KEY:
-    if input == nil:
+    if input.isNone:
       input_state = ZF_INPUT_PASS_CHAR
     else:
-      zf_push(input[0])
+      zf_push(ZfCell(input.get()[0]))
   of PRIM_LITS:
     inc(ip, dict_get_cell(ip, addr(d1)))
-    zf_push(ip)
+    zf_push(ip.ZfCell)
     zf_push(d1)
     inc(ip, d1)
   of PRIM_AND:
